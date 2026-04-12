@@ -1,0 +1,620 @@
+{
+  "name": "TG task",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": [
+          "message"
+        ],
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -352,
+        208
+      ],
+      "id": "63457852-d0b4-45b0-8866-52fd81181f52",
+      "name": "Telegram Trigger",
+      "webhookId": "161d0a32-3fd0-4802-aba2-0ef43c31a1eb",
+      "credentials": {
+        "telegramApi": {
+          "id": "3XDnBk2mup66MTP5",
+          "name": "Задачи сотрудникам"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "bc6061ff-2e73-44b1-a3aa-f2d5194a82fe",
+              "name": "message.text",
+              "value": "={{ $json.content.parts[0].text }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        352,
+        0
+      ],
+      "id": "fd80d76b-1b18-4742-a2de-afe74d35d6d6",
+      "name": "Edit Fields"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        496,
+        208
+      ],
+      "id": "f8a14d84-a468-48ab-916f-8c034021fbf7",
+      "name": "Merge"
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "fileId": "={{ $json.message.voice.file_id }}",
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "id": "8f9caf94-0202-400c-9852-85401f79acff",
+      "name": "Get a file",
+      "webhookId": "15c48b9b-4764-4ff6-9885-e712db839662",
+      "credentials": {
+        "telegramApi": {
+          "id": "3XDnBk2mup66MTP5",
+          "name": "Задачи сотрудникам"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "# АУДИО",
+        "height": 260,
+        "width": 540,
+        "color": 5
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -48,
+        -80
+      ],
+      "typeVersion": 1,
+      "id": "c4647287-c4db-4442-a162-c900a2571e0f",
+      "name": "Sticky Note4"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $('Telegram Trigger').item.json.message.text ?? $('Merge').item.json.message.text}}",
+        "needsFallback": true,
+        "options": {
+          "systemMessage": "=Роль и Контекст:\nТы — AI-ассистент в системе управления задачами внутри Telegram. Твоя задача — принимать сообщения от пользователей , которые уже содержат имя исполнителя, и превращать их в четкие, структурированные технические задания (ТЗ).Ты взаимодействуешь с Google Sheets (как с базой данных сотрудников) для поиска Telegram юзернейма и формируешь готовое сообщение для чата. Может быть такое что имя исполнителя не определенно в этом случае не нужно искать его в базе, нужно вывести задачу без исполнителя\n\nУмный поиск в базе:\n\nИщи совпадения по полному имени \nИщи совпадения по уменьшительной форме \nЕсли имя не найдено → создавай задачу без упоминания имени\n\nСравни имя с колонкой A (name)\nЕсли найдено → возьми user_name из колонки B\nЕсли НЕ найдено → пропускай упоминание\nЕсли имя найдено, но соответствующего ника в хранилище нет -> задача формируется и публикуется без упоминания ника.\n\nФормирование задачи:\nИспользуй ТОЛЬКО информацию из сообщения\nНе придумывай детали\nСоблюдай SMART-принципы в едином тексте\nSMART-критерии для формулировки задач:\nКонкретная - Четко что нужно сделать\nИзмеримая - Как измерить результат\nДостижимая - Реалистичность выполнения\nРелевантная - Соответствие целям\nОграниченная по времени - Четкий дедлайн\n\nАлгоритм:\nИзвлечение данных из сообщения:\nОпредели, содержит ли сообщение имя исполнителя\nВыдели суть задачи\nПоиск юзернейма в Google Sheets:\nНайди в колонке A (Name) строку с извлеченным именем\nЕсли имя найдено → возьми User_name из колонки B\nЕсли имя не найдено → юзернейм не используется\n\n\n\n\nСрок выполнения определяй на основе:\nУказанного срока в сообщении (\"до пятницы\", \"срочно\" Текущей даты {{ $now }}\nЕсли срока нет, то выводи Срок выполения: не указан\n\nКритически Важные Правила:\nUser_name всегда первый: Сообщение всегда должно начинаться с упоминания юзернейма в формате @username.\n\nИспользуй только предоставленную пользователем информацию\nНе придумывай детали, показатели, метрики\nЕсли информации недостаточно для SMART - формулируй максимально конкретно на основе имеющихся данных\n\nСообщение должно быть четким и фактическим\nВсегда соблюдай структуру SMART, но без подзаголовков\n\nЧеткость и действие: Описание должно быть настолько ясным, что у исполнителя не должно остаться вопросов \"что делать?\".\n\nТолько факты: Не используй в финальном сообщении фразы вроде \"Пожалуйста,\" \"Мог бы ты...\". Сообщение — это прямое ТЗ.\n\nПример выполнения промта от начала до конца:\n\nВвод пользователя в бот: \"Мария, нужно пофиксить баг с корзиной на сайте, клиенты жалуются. Срок до завтра.\"\n\nШаг 2 (Извлечение):\n\nИмя исполнителя: Мария\n\nТекст задачи: \"нужно пофиксить баг с корзиной на сайте, клиенты жалуются. Срок до завтра.\"\n\nШаг 3 (Поиск в Sheets):\n\nВ колонке A найден сотрудник \"Мария Петрова\".\n\nUser_name: @maria_petrova.\n\nШаг 4 (Генерация ТЗ):\n\nЗаголовок: Исправление ошибки в функционале корзины покупок.\n\nОписание: Проанализировать жалобы клиентов на некорректную работу корзины. Выявить и устранить ошибку, из-за которой товары не добавляются/исчезают из корзины. Протестировать исправление на тестовом стенде, а затем запустить на основном сайте.\n\nСрок: (Рассчитанный на основе \"до завтра\").\n\nЗадача составленна по принципам SMART\n\nФОРМАТ ОТВЕТА (БЕЗ Специальных символов) в ответе только то что ниже \n\n[@username ЕСЛИ НАЙДЕН]\n\nЗаголовок: [Название задачи]\n\n\nДетальное описание: (добавь еще шаги если нужно)\n1. [Первый конкретный шаг]\n2. [Второй конкретный шаг] \n3. [Третий конкретный шаг]\n... и так далее\n\nИтоговый результат: [Конкретный измеримый результат]\n\nСрок выполнения: [DD.MM.YYYY]\n\n----\n\nесли [@username] нет выводи только текст задачи \n\nЗаголовок: [Название задачи]\n\nДетальное описание: (добавь еще шаги если нужно)\n1. [Первый конкретный шаг]\n2. [Второй конкретный шаг] \n3. [Третий конкретный шаг]\n... и так далее\n\nИтоговый результат: [Конкретный измеримый результат]\n\nСрок выполнения: [DD.MM.YYYY]\n\n\n"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 2.2,
+      "position": [
+        1168,
+        208
+      ],
+      "id": "60cb9d5f-f2dc-429a-8672-0c710677d9d9",
+      "name": "AI Agent"
+    },
+    {
+      "parameters": {
+        "options": {
+          "maxOutputTokens": 2000
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        1040,
+        416
+      ],
+      "id": "8e644018-a4df-43a8-bcc9-1da32fd31617",
+      "name": "Google Gemini Chat Model",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "Hfw8C7n0uMW91ANH",
+          "name": "Google Gemini(PaLM) TG Task"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1jxa9UKmF1hV5O-tjUq1QQVnnyfR6g1zDnJejioLgNVY",
+          "mode": "list",
+          "cachedResultName": "tg task agent",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1jxa9UKmF1hV5O-tjUq1QQVnnyfR6g1zDnJejioLgNVY/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Лист1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1jxa9UKmF1hV5O-tjUq1QQVnnyfR6g1zDnJejioLgNVY/edit#gid=0"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheetsTool",
+      "typeVersion": 4.7,
+      "position": [
+        1360,
+        416
+      ],
+      "id": "06f1d79c-c83a-4ab7-bc5e-25f6fcf6b2f1",
+      "name": "Get row(s) in sheet in Google Sheets",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "PkhCo3k4Nda5xZgf",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Telegram Trigger').item.json.message.chat.id }}",
+        "text": "={{ $json.output }}",
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "fa037ddb-ff7c-423e-9751-000fbb34a517",
+      "name": "Send a text message",
+      "type": "n8n-nodes-base.telegram",
+      "position": [
+        1584,
+        208
+      ],
+      "webhookId": "84ca051b-0e3c-4311-8117-eca08c4a86fa",
+      "typeVersion": 1.2,
+      "credentials": {
+        "telegramApi": {
+          "id": "3XDnBk2mup66MTP5",
+          "name": "Задачи сотрудникам"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.message.text }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "string",
+                      "operation": "exists",
+                      "singleValue": true
+                    },
+                    "id": "51dbd9b5-0722-46c6-93d5-444bfce175c9"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "text"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "20425726-0874-4369-80ae-5883225d4a4a",
+                    "leftValue": "={{ $json.message.voice }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "object",
+                      "operation": "exists",
+                      "singleValue": true
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "audio"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.3,
+      "position": [
+        -160,
+        208
+      ],
+      "id": "439a2f04-ca97-40e0-954b-058240a96326",
+      "name": "Switch"
+    },
+    {
+      "parameters": {
+        "resource": "audio",
+        "modelId": {
+          "__rl": true,
+          "value": "models/gemini-2.5-flash",
+          "mode": "list",
+          "cachedResultName": "models/gemini-2.5-flash"
+        },
+        "inputType": "binary",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1,
+      "position": [
+        176,
+        0
+      ],
+      "id": "b232be57-4816-4b3b-b0cb-845935dfde59",
+      "name": "Transcribe a recording",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "Hfw8C7n0uMW91ANH",
+          "name": "Google Gemini(PaLM) TG Task"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "gpt-3.5-turbo",
+          "mode": "list",
+          "cachedResultName": "gpt-3.5-turbo"
+        },
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.2,
+      "position": [
+        1152,
+        400
+      ],
+      "id": "f42443c0-49a2-4b06-8192-18b3723944c1",
+      "name": "OpenAI Chat Model",
+      "credentials": {
+        "openAiApi": {
+          "id": "PGcbdvVjBsD5s4ky",
+          "name": "tasktg"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $('Telegram Trigger').item.json.message.from.username }}"
+      },
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.3,
+      "position": [
+        1248,
+        416
+      ],
+      "id": "cb762650-5cc2-420b-a0ed-662a5cd0110b",
+      "name": "Simple Memory"
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Telegram Trigger').item.json.message.chat.id }}",
+        "text": "=Задачу понял делаю описание",
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "83793995-babb-4b02-bf0e-745180240516",
+      "name": "Send a text message2",
+      "type": "n8n-nodes-base.telegram",
+      "position": [
+        928,
+        224
+      ],
+      "webhookId": "84ca051b-0e3c-4311-8117-eca08c4a86fa",
+      "typeVersion": 1.2,
+      "credentials": {
+        "telegramApi": {
+          "id": "3XDnBk2mup66MTP5",
+          "name": "Задачи сотрудникам"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $('Telegram Trigger').item.json.message.text }}",
+                    "rightValue": "/start",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "fb8e8591-a254-475f-af84-c1d1bf1b2e87"
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "e5588ff2-07a7-4d0e-8dd3-1961d758dd7a",
+                    "leftValue": "={{ $('Switch').item.json.message.text }}{{ $json.message.text }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "string",
+                      "operation": "exists",
+                      "singleValue": true
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.3,
+      "position": [
+        656,
+        208
+      ],
+      "id": "ba3663fa-9620-4822-8b0a-2a06c6a8317a",
+      "name": "Switch1"
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Telegram Trigger').item.json.message.chat.id }}",
+        "text": "=КЛЮЧЕВЫЕ ПРАВИЛА ПОСТАНОВКИ ЗАДАЧ:\n\n1. 🗣️ Указывайте исполнителя\nНачинайте сообщение с имени: \"Иван, ...\", \"Мария, ...\"\nЕсли исполнитель не указан → задача будет без ответственного\n\n2. ⏰ Всегда указывайте срок\nКонкретная дата: \"к 25.05\", \"до пятницы\"\nОтносительный срок: \"сегодня\", \"завтра\", \"срочно\"\nЕсли срок не указан → Срок выполения: не указан",
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "17085d9c-1a52-4339-87ea-f79f80ecad4a",
+      "name": "Send a text message3",
+      "type": "n8n-nodes-base.telegram",
+      "position": [
+        944,
+        -64
+      ],
+      "webhookId": "84ca051b-0e3c-4311-8117-eca08c4a86fa",
+      "typeVersion": 1.2,
+      "credentials": {
+        "telegramApi": {
+          "id": "3XDnBk2mup66MTP5",
+          "name": "Задачи сотрудникам"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Telegram Trigger": {
+      "main": [
+        [
+          {
+            "node": "Switch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Get a file": {
+      "main": [
+        [
+          {
+            "node": "Transcribe a recording",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge": {
+      "main": [
+        [
+          {
+            "node": "Switch1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Gemini Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get row(s) in sheet in Google Sheets": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Send a text message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Get a file",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transcribe a recording": {
+      "main": [
+        [
+          {
+            "node": "Edit Fields",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Simple Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send a text message2": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch1": {
+      "main": [
+        [
+          {
+            "node": "Send a text message3",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send a text message2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "fcdea02d-2b16-4b41-a388-46d560836701",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "c89ea9394b2c25e9479c386babf44f71a1748af545f056a5713e02c426c62803"
+  },
+  "id": "TkpmNyO6OAERAB3N",
+  "tags": [
+    {
+      "name": "Без Рутины",
+      "id": "8jheTByLsAHJJE4f",
+      "createdAt": "2025-10-10T10:49:09.479Z",
+      "updatedAt": "2025-10-10T10:49:09.479Z"
+    }
+  ]
+}

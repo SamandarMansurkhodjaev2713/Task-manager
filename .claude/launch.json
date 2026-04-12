@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "telegram-task-bot (cargo run)",
+      "runtimeExecutable": "cargo",
+      "runtimeArgs": ["run"],
+      "port": 8080
+    },
+    {
+      "name": "telegram-task-bot (docker-compose)",
+      "runtimeExecutable": "docker-compose",
+      "runtimeArgs": ["up", "--build"],
+      "port": 8080
+    }
+  ]
+}

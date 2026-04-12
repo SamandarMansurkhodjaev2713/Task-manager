@@ -1,0 +1,34 @@
+services:
+  tests:
+    profiles:
+      - test
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      CARGO_BUILD_JOBS: "1"
+      DATABASE_URL: sqlite:///tmp/tests.db
+      RUST_BACKTRACE: "1"
+      RUSTFLAGS: -Cdebuginfo=0
+    command: ["cargo", "test", "--workspace", "-j", "1"]
+    restart: "no"
+
+  telegram-task-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: sqlite:///app/data/app.db
+    user: "0:0"
+    ports:
+      - "8080:8080"
+    volumes:
+      - bot_sqlite_data:/app/data
+    restart: unless-stopped
+
+volumes:
+  bot_sqlite_data:
