@@ -13,6 +13,7 @@ use crate::domain::audit::{AuditAction, AuditLogEntry};
 use crate::domain::errors::{AppError, AppResult};
 use crate::domain::notification::{Notification, NotificationDeliveryState, NotificationType};
 use crate::domain::user::User;
+use crate::shared::task_codes::format_public_task_code_or_placeholder;
 
 pub enum ReassignTaskOutcome {
     Reassigned(TaskStatusSummary),
@@ -85,6 +86,7 @@ impl ReassignTaskUseCase {
 
         Ok(ReassignTaskOutcome::Reassigned(TaskStatusSummary {
             task_uid,
+            public_code: format_public_task_code_or_placeholder(saved_task.id),
             status: saved_task.status,
             message: format!("Исполнитель обновлён: {}", assignee_query.trim()),
         }))

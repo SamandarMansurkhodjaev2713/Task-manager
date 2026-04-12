@@ -20,6 +20,7 @@ use crate::domain::notification::{Notification, NotificationDeliveryState, Notif
 use crate::domain::parsing::parse_task_request;
 use crate::domain::task::{MessageType, Task, TaskStatus};
 use crate::domain::user::{User, UserRole};
+use crate::shared::task_codes::format_public_task_code_or_placeholder;
 
 pub struct CreateTaskFromMessageUseCase {
     clock: Arc<dyn Clock>,
@@ -100,11 +101,11 @@ impl CreateTaskFromMessageUseCase {
         let stored_task = match persisted_task {
             PersistedTask::Created(task) => task,
             PersistedTask::Existing(task) => {
-                return Ok(TaskCreationOutcome::Created(
+                return Ok(TaskCreationOutcome::DuplicateFound(
                     TaskCreationSummary::from_task(
                         &task,
                         build_duplicate_message(&task),
-                        DeliveryStatus::CreatorOnly,
+                        resolve_duplicate_delivery_status(&task),
                     ),
                 ));
             }
@@ -284,7 +285,7 @@ fn build_creator_message(task: &Task, delivery_status: DeliveryStatus) -> String
 
     format!(
         "Задача сохранена.\nID: {}\nСтатус: {}\n{}\n\n{}",
-        task.task_uid,
+        format_public_task_code_or_placeholder(task.id),
         task.status,
         delivery_hint,
         task.render_for_telegram(None),
@@ -294,9 +295,21 @@ fn build_creator_message(task: &Task, delivery_status: DeliveryStatus) -> String
 fn build_duplicate_message(task: &Task) -> String {
     format!(
         "Похоже, это сообщение уже было обработано раньше. Дубликат не создан, открывайте существующую карточку.\n\nID: {}\nСтатус: {}",
-        task.task_uid,
+        format_public_task_code_or_placeholder(task.id),
         task.status,
     )
+}
+
+fn resolve_duplicate_delivery_status(task: &Task) -> DeliveryStatus {
+    if task.assigned_to_employee_id.is_some() && task.assigned_to_user_id.is_none() {
+        return DeliveryStatus::PendingAssigneeRegistration;
+    }
+
+    if task.assigned_to_user_id.is_some() {
+        return DeliveryStatus::PendingDelivery;
+    }
+
+    DeliveryStatus::CreatorOnly
 }
 
 fn message_type_label(content: &MessageContent) -> &'static str {

@@ -213,14 +213,14 @@ pub(crate) async fn submit_guided_draft(
 
     let synthetic_message = build_guided_message(chat_id.0, actor, &draft, description);
     match state.create_task_use_case.execute(synthetic_message).await {
-        Ok(TaskCreationOutcome::Created(outcome)) => {
+        Ok(outcome @ TaskCreationOutcome::Created(_))
+        | Ok(outcome @ TaskCreationOutcome::DuplicateFound(_)) => {
             state.creation_sessions.clear(chat_id.0).await;
-            let created = TaskCreationOutcome::Created(outcome);
             send_screen(
                 bot,
                 chat_id,
-                &ui::task_creation_text(&created),
-                ui::outcome_keyboard(&created),
+                &ui::task_creation_text(&outcome),
+                ui::outcome_keyboard(&outcome),
             )
             .await
         }
@@ -407,7 +407,10 @@ fn should_clear_session(outcome: &TaskCreationOutcome, completion: SessionComple
     match completion {
         SessionCompletion::Clear => true,
         SessionCompletion::KeepOnClarification => {
-            matches!(outcome, TaskCreationOutcome::Created(_))
+            matches!(
+                outcome,
+                TaskCreationOutcome::Created(_) | TaskCreationOutcome::DuplicateFound(_)
+            )
         }
     }
 }

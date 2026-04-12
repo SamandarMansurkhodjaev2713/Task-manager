@@ -1,19 +1,23 @@
 use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup};
 
+use super::ui_shared::{
+    action_label, back_label, is_dangerous_action, next_best_action, status_badge, truncate_title,
+};
 use crate::application::dto::task_views::{
-    TaskActionView, TaskCreationOutcome, TaskListPage, TaskStatusDetails,
+    TaskActionView, TaskCreationOutcome, TaskListItem, TaskListPage, TaskStatusDetails,
 };
 use crate::domain::user::User;
 use crate::presentation::telegram::callbacks::{
-    action_to_status, encode_callback, DraftEditField, TaskListOrigin, TelegramCallback,
-};
-use crate::presentation::telegram::ui_shared::{
-    action_label, back_label, status_badge, truncate_title,
+    action_to_status, encode_callback, DraftEditField, TaskCardMode, TaskListOrigin,
+    TelegramCallback,
 };
 
 pub fn main_menu_keyboard(actor: &User) -> InlineKeyboardMarkup {
     let mut rows = vec![
-        vec![button("🆕 Создать задачу", TelegramCallback::MenuCreate)],
+        vec![
+            button("🧭 Мой фокус", list_callback(TaskListOrigin::Focus, None)),
+            button("🆕 Создать задачу", TelegramCallback::MenuCreate),
+        ],
         vec![
             button(
                 "📥 Мои задачи",
@@ -39,8 +43,18 @@ pub fn main_menu_keyboard(actor: &User) -> InlineKeyboardMarkup {
                     "👥 Командные задачи",
                     list_callback(TaskListOrigin::Team, None),
                 ),
-                button("📈 Командная статистика", TelegramCallback::MenuTeamStats),
+                button(
+                    "🧪 Inbox менеджера",
+                    list_callback(TaskListOrigin::ManagerInbox, None),
+                ),
             ],
+        );
+        rows.insert(
+            3,
+            vec![button(
+                "📈 Командная статистика",
+                TelegramCallback::MenuTeamStats,
+            )],
         );
     }
 
@@ -70,16 +84,12 @@ pub fn task_list_keyboard(origin: TaskListOrigin, page: &TaskListPage) -> Inline
         .iter()
         .flat_map(|section| section.tasks.iter())
         .map(|task| {
-            let label = format!(
-                "{} {}",
-                status_badge(&task.status.to_string()),
-                truncate_title(&task.title)
-            );
             vec![button(
-                &label,
+                &task_list_button_label(task),
                 TelegramCallback::OpenTask {
                     task_uid: task.task_uid,
                     origin,
+                    mode: TaskCardMode::Compact,
                 },
             )]
         })
@@ -102,58 +112,39 @@ pub fn task_list_keyboard(origin: TaskListOrigin, page: &TaskListPage) -> Inline
 pub fn task_detail_keyboard(
     details: &TaskStatusDetails,
     origin: TaskListOrigin,
+    mode: TaskCardMode,
 ) -> InlineKeyboardMarkup {
-    let mut action_buttons = Vec::new();
+    let primary_action = next_best_action(&details.available_actions);
+    let mut rows = Vec::new();
 
-    for action in &details.available_actions {
-        match action {
-            TaskActionView::Cancel => action_buttons.push(button(
-                action_label(*action),
-                TelegramCallback::ConfirmTaskCancel {
-                    task_uid: details.task_uid,
-                    origin,
-                },
-            )),
-            TaskActionView::AddComment => action_buttons.push(button(
-                action_label(*action),
-                TelegramCallback::StartTaskCommentInput {
-                    task_uid: details.task_uid,
-                    origin,
-                },
-            )),
-            TaskActionView::ReportBlocker => action_buttons.push(button(
-                action_label(*action),
-                TelegramCallback::StartTaskBlockerInput {
-                    task_uid: details.task_uid,
-                    origin,
-                },
-            )),
-            TaskActionView::Reassign => action_buttons.push(button(
-                action_label(*action),
-                TelegramCallback::StartTaskReassignInput {
-                    task_uid: details.task_uid,
-                    origin,
-                },
-            )),
-            _ => {
-                if let Some(status) = action_to_status(*action) {
-                    action_buttons.push(button(
-                        action_label(*action),
-                        TelegramCallback::UpdateTaskStatus {
-                            task_uid: details.task_uid,
-                            next_status: status,
-                            origin,
-                        },
-                    ));
-                }
-            }
-        }
+    if let Some(action) = primary_action {
+        rows.push(vec![action_button(action, details, origin)]);
     }
 
-    let mut rows = action_buttons
-        .chunks(2)
-        .map(|chunk| chunk.to_vec())
+    let secondary_actions = details
+        .available_actions
+        .iter()
+        .copied()
+        .filter(|action| Some(*action) != primary_action)
+        .filter(|action| !is_dangerous_action(*action))
+        .map(|action| action_button(action, details, origin))
         .collect::<Vec<_>>();
+    for chunk in secondary_actions.chunks(2) {
+        rows.push(chunk.to_vec());
+    }
+
+    let dangerous_actions = details
+        .available_actions
+        .iter()
+        .copied()
+        .filter(|action| is_dangerous_action(*action))
+        .map(|action| action_button(action, details, origin))
+        .collect::<Vec<_>>();
+    if !dangerous_actions.is_empty() {
+        rows.push(dangerous_actions);
+    }
+
+    rows.push(vec![task_view_toggle_button(details, origin, mode)]);
     rows.push(vec![button(back_label(origin), back_callback(origin))]);
     rows.push(vec![button("🏠 В меню", TelegramCallback::MenuHome)]);
     InlineKeyboardMarkup::new(rows)
@@ -169,7 +160,14 @@ pub fn cancel_confirmation_keyboard(
                 "✅ Да, отменить",
                 TelegramCallback::ExecuteTaskCancel { task_uid, origin },
             ),
-            button("↩️ Назад", TelegramCallback::OpenTask { task_uid, origin }),
+            button(
+                "↩️ Назад",
+                TelegramCallback::OpenTask {
+                    task_uid,
+                    origin,
+                    mode: TaskCardMode::Compact,
+                },
+            ),
         ],
         vec![button("🏠 В меню", TelegramCallback::MenuHome)],
     ])
@@ -177,19 +175,22 @@ pub fn cancel_confirmation_keyboard(
 
 pub fn outcome_keyboard(outcome: &TaskCreationOutcome) -> InlineKeyboardMarkup {
     match outcome {
-        TaskCreationOutcome::Created(summary) => InlineKeyboardMarkup::new(vec![
-            vec![button(
-                "📋 Открыть карточку",
-                TelegramCallback::OpenTask {
-                    task_uid: summary.task_uid,
-                    origin: TaskListOrigin::Created,
-                },
-            )],
-            vec![
-                button("🆕 Ещё задача", TelegramCallback::MenuCreate),
-                button("🏠 В меню", TelegramCallback::MenuHome),
-            ],
-        ]),
+        TaskCreationOutcome::Created(summary) | TaskCreationOutcome::DuplicateFound(summary) => {
+            InlineKeyboardMarkup::new(vec![
+                vec![button(
+                    "📋 Открыть карточку",
+                    TelegramCallback::OpenTask {
+                        task_uid: summary.task_uid,
+                        origin: TaskListOrigin::Created,
+                        mode: TaskCardMode::Compact,
+                    },
+                )],
+                vec![
+                    button("🆕 Ещё задача", TelegramCallback::MenuCreate),
+                    button("🏠 В меню", TelegramCallback::MenuHome),
+                ],
+            ])
+        }
         TaskCreationOutcome::ClarificationRequired(_) => InlineKeyboardMarkup::new(vec![
             vec![button(
                 "🆕 Уточнить и создать",
@@ -242,6 +243,95 @@ pub fn guided_confirmation_keyboard() -> InlineKeyboardMarkup {
         )],
         vec![button("🏠 В меню", TelegramCallback::MenuHome)],
     ])
+}
+
+fn task_list_button_label(task: &TaskListItem) -> String {
+    let deadline = task
+        .deadline
+        .map(|value| format!(" • {}", value.format("%d.%m")))
+        .unwrap_or_default();
+    let title = truncate_title(&task.title);
+    format!(
+        "{} {} {}{}",
+        task.public_code,
+        status_badge(task.status),
+        title,
+        deadline
+    )
+}
+
+fn action_button(
+    action: TaskActionView,
+    details: &TaskStatusDetails,
+    origin: TaskListOrigin,
+) -> InlineKeyboardButton {
+    match action {
+        TaskActionView::Cancel => button(
+            action_label(action),
+            TelegramCallback::ConfirmTaskCancel {
+                task_uid: details.task_uid,
+                origin,
+            },
+        ),
+        TaskActionView::AddComment => button(
+            action_label(action),
+            TelegramCallback::StartTaskCommentInput {
+                task_uid: details.task_uid,
+                origin,
+            },
+        ),
+        TaskActionView::ReportBlocker => button(
+            action_label(action),
+            TelegramCallback::StartTaskBlockerInput {
+                task_uid: details.task_uid,
+                origin,
+            },
+        ),
+        TaskActionView::Reassign => button(
+            action_label(action),
+            TelegramCallback::StartTaskReassignInput {
+                task_uid: details.task_uid,
+                origin,
+            },
+        ),
+        _ => {
+            let next_status = action_to_status(action)
+                .expect("status transition action must resolve to a concrete task status");
+            button(
+                action_label(action),
+                TelegramCallback::UpdateTaskStatus {
+                    task_uid: details.task_uid,
+                    next_status,
+                    origin,
+                },
+            )
+        }
+    }
+}
+
+fn task_view_toggle_button(
+    details: &TaskStatusDetails,
+    origin: TaskListOrigin,
+    mode: TaskCardMode,
+) -> InlineKeyboardButton {
+    match mode {
+        TaskCardMode::Compact => button(
+            "🔎 Подробнее",
+            TelegramCallback::OpenTask {
+                task_uid: details.task_uid,
+                origin,
+                mode: TaskCardMode::Expanded,
+            },
+        ),
+        TaskCardMode::Expanded => button(
+            "🪶 Коротко",
+            TelegramCallback::OpenTask {
+                task_uid: details.task_uid,
+                origin,
+                mode: TaskCardMode::Compact,
+            },
+        ),
+    }
 }
 
 fn list_callback(origin: TaskListOrigin, cursor: Option<String>) -> TelegramCallback {

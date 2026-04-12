@@ -9,9 +9,11 @@ It should let an engineer resume work without re-reading the whole codebase.
 - Stack: Rust, Teloxide, SQLite, clean architecture, background jobs
 - Current focus: move from "strong base" to genuinely production-grade quality
 - Local environment constraint:
-  - `cargo fmt --check` works
-  - local `cargo check` is blocked by Windows policy because the installed target is `x86_64-pc-windows-gnu` and `gcc.exe` is disallowed
-  - Docker validation was intentionally avoided in the last implementation round unless explicitly requested
+  - `cargo fmt --all` works
+  - local `cargo check` now works in this workspace
+  - local `cargo test` succeeded in a full run once during this iteration
+  - repeated execution of some compiled test binaries may still be blocked by Windows application control policy (`os error 4551`)
+  - Docker validation was intentionally avoided in this implementation round unless explicitly requested
 
 ## Chosen architectural model
 
@@ -156,6 +158,85 @@ Reason rejected:
 - causes false success signals
 - breaks trust in bot
 
+### 8. Public task code is derived from persisted task id
+
+Chosen:
+- user-facing task reference is `T-####`
+- internal identity remains UUID v7
+- `/status` and `/cancel_task` now accept public code or UUID
+
+Why:
+- users should not work with raw UUIDs
+- task ids already exist, are stable, and do not require a risky schema migration
+- this keeps backward compatibility while dramatically improving UX
+
+Rejected:
+- adding a second stored public id sequence in the database
+
+Reason rejected:
+- unnecessary migration risk for this stage
+- existing `tasks.id` already provides a safe monotonic reference
+
+### 9. Truthful duplicate flow is explicit
+
+Chosen:
+- `TaskCreationOutcome` now distinguishes:
+  - `Created`
+  - `DuplicateFound`
+  - `ClarificationRequired`
+
+Why:
+- duplicate detection should never be rendered as successful creation
+- this directly fixes a trust-breaking UX bug
+
+Rejected:
+- reusing `Created` with a different message body
+
+Reason rejected:
+- presentation layer cannot reliably distinguish a real creation from a dedupe hit
+- leads to confusing copy and wrong affordances
+
+### 10. Task card now has compact and expanded modes
+
+Chosen:
+- default open is compact
+- expanded mode is opt-in via callback
+- compact card highlights:
+  - public code
+  - status
+  - deadline
+  - assignee
+  - delivery
+  - next best action
+
+Why:
+- the old card overloaded one message with too much detail
+- compact first, details on demand is a better Telegram pattern
+
+Rejected:
+- always-expanded task card
+
+Reason rejected:
+- too much scrolling
+- higher cognitive load on mobile
+
+### 11. Focus and manager inbox are first-class task list modes
+
+Chosen:
+- `Focus` for individual daily work
+- `ManagerInbox` for review/blocker/risk monitoring
+
+Why:
+- plain task lists are not enough for day-to-day prioritization
+- managers need a “what needs my decision” screen, not just a raw team backlog
+
+Rejected:
+- keeping only `Assigned`, `Created`, and `Team`
+
+Reason rejected:
+- weak prioritization UX
+- too much manual scanning
+
 ## Current task lifecycle
 
 - `created`
@@ -169,6 +250,24 @@ Reason rejected:
 Important nuance:
 - `sent` means the assignment notification was actually delivered
 - `created` can still have an assignee if delivery has not happened yet
+
+## Current user-facing navigation
+
+- Main menu:
+  - `Мой фокус`
+  - `Создать задачу`
+  - `Мои задачи`
+  - `Созданные мной`
+  - manager-only:
+    - `Командные задачи`
+    - `Inbox менеджера`
+- Task card:
+  - compact by default
+  - expanded on demand
+  - primary action highlighted first
+  - dangerous action isolated
+- Commands:
+  - user-facing task reference is short code like `T-0042`
 
 ## Current delivery lifecycle
 
@@ -223,15 +322,15 @@ Highest-priority decomposition targets:
 - `src/presentation/telegram/dispatcher_handlers.rs`
 - `src/domain/task.rs`
 - `src/presentation/telegram/callbacks.rs`
-- `src/presentation/telegram/ui_text.rs`
+- `src/presentation/telegram/ui_keyboards.rs`
 
 ### 2. Local build verification is incomplete
 
 - formatting is verified
-- compile/test verification is incomplete locally because of the blocked GNU toolchain
-- must validate either:
-  - in Docker, or
-  - with an MSVC Rust toolchain
+- compile is verified locally via `cargo check`
+- tests are verified from a full successful run in this workspace
+- one environment-specific risk remains:
+  - some repeated test executable launches may be blocked by Windows application control policy
 
 ### 3. Test matrix is still not strong enough for true 200/200
 
@@ -276,10 +375,10 @@ Not chosen because it weakens managerial control and breaks review semantics.
 ## Recommended next iteration order
 
 1. Decompose the largest remaining files
-2. Expand tests around conflicts/stale callbacks/retries
-3. Add stronger operational docs and runbooks
-4. Validate full build/test flow in a supported environment
-5. Do one final consistency pass on Telegram UX text and empty/error states
+2. Add real button-based ambiguity resolution and assignee suggestions
+3. Strengthen tests around stale callbacks/conflicts/retries
+4. Expand blocker escalation and manager review ergonomics
+5. Add stronger operational docs and runbooks
 
 ## How to use this file
 

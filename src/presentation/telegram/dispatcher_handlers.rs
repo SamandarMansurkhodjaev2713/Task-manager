@@ -1,5 +1,3 @@
-use std::str::FromStr;
-
 use teloxide::prelude::Requester;
 use teloxide::types::ChatId;
 use teloxide::Bot;
@@ -11,7 +9,7 @@ use crate::domain::errors::AppError;
 use crate::domain::message::{IncomingMessage, MessageContent};
 use crate::domain::task::TaskStatus;
 use crate::domain::user::User;
-use crate::presentation::telegram::callbacks::{TaskListOrigin, TelegramCallback};
+use crate::presentation::telegram::callbacks::{TaskCardMode, TaskListOrigin, TelegramCallback};
 use crate::presentation::telegram::commands::BotCommand;
 use crate::presentation::telegram::ui;
 
@@ -126,9 +124,11 @@ pub(crate) async fn handle_callback_action(
         TelegramCallback::ListTasks { origin, cursor } => {
             show_task_list(bot, state, &actor, chat_id, origin, cursor).await
         }
-        TelegramCallback::OpenTask { task_uid, origin } => {
-            show_task_details(bot, state, &actor, chat_id, task_uid, origin).await
-        }
+        TelegramCallback::OpenTask {
+            task_uid,
+            origin,
+            mode,
+        } => show_task_details(bot, state, &actor, chat_id, task_uid, origin, mode).await,
         TelegramCallback::UpdateTaskStatus {
             task_uid,
             next_status,
@@ -282,7 +282,11 @@ async fn show_task_from_command(
     chat_id: ChatId,
     task_uid: &str,
 ) -> Result<(), teloxide::RequestError> {
-    match Uuid::from_str(task_uid) {
+    match state
+        .get_task_status_use_case
+        .resolve_task_uid(task_uid)
+        .await
+    {
         Ok(task_uid) => {
             show_task_details(
                 bot,
@@ -291,6 +295,7 @@ async fn show_task_from_command(
                 chat_id,
                 task_uid,
                 TaskListOrigin::Created,
+                TaskCardMode::Compact,
             )
             .await
         }
@@ -313,7 +318,11 @@ async fn execute_cancel_from_command(
     chat_id: ChatId,
     task_uid: &str,
 ) -> Result<(), teloxide::RequestError> {
-    match Uuid::from_str(task_uid) {
+    match state
+        .get_task_status_use_case
+        .resolve_task_uid(task_uid)
+        .await
+    {
         Ok(task_uid) => {
             update_task_status(
                 bot,
@@ -345,6 +354,7 @@ pub(crate) async fn show_task_details(
     chat_id: ChatId,
     task_uid: Uuid,
     origin: TaskListOrigin,
+    mode: TaskCardMode,
 ) -> Result<(), teloxide::RequestError> {
     match state
         .get_task_status_use_case
@@ -352,8 +362,8 @@ pub(crate) async fn show_task_details(
         .await
     {
         Ok(details) => {
-            let text = ui::task_detail_text(&details);
-            let keyboard = ui::task_detail_keyboard(&details, origin);
+            let text = ui::task_detail_text(&details, mode);
+            let keyboard = ui::task_detail_keyboard(&details, origin, mode);
             send_screen(bot, chat_id, &text, keyboard).await
         }
         Err(error) => send_error(bot, chat_id.0, error).await,
@@ -398,7 +408,16 @@ async fn update_task_status(
     {
         Ok(summary) => {
             bot.send_message(chat_id, summary.message).await?;
-            show_task_details(bot, state, actor, chat_id, task_uid, origin).await
+            show_task_details(
+                bot,
+                state,
+                actor,
+                chat_id,
+                task_uid,
+                origin,
+                TaskCardMode::Compact,
+            )
+            .await
         }
         Err(error) => send_error(bot, chat_id.0, error).await,
     }
@@ -466,5 +485,7 @@ fn list_scope(origin: TaskListOrigin) -> TaskListScope {
         TaskListOrigin::Assigned => TaskListScope::AssignedToMe,
         TaskListOrigin::Created => TaskListScope::CreatedByMe,
         TaskListOrigin::Team => TaskListScope::Team,
+        TaskListOrigin::Focus => TaskListScope::Focus,
+        TaskListOrigin::ManagerInbox => TaskListScope::ManagerInbox,
     }
 }

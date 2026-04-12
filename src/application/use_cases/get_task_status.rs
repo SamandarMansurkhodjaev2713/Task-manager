@@ -17,6 +17,9 @@ use crate::domain::notification::NotificationType;
 use crate::domain::task::{Task, TaskStatus};
 use crate::domain::user::User;
 use crate::shared::constants::limits::MAX_TASK_CONTEXT_PREVIEW_COMMENTS;
+use crate::shared::task_codes::{
+    format_public_task_code_or_placeholder, parse_task_reference, TaskReference,
+};
 
 pub struct GetTaskStatusUseCase {
     task_repository: Arc<dyn TaskRepository>,
@@ -74,8 +77,9 @@ impl GetTaskStatusUseCase {
 
         Ok(TaskStatusDetails {
             task_uid,
+            public_code: format_public_task_code_or_placeholder(task.id),
             title: task.title.clone(),
-            status: render_status(task.status).to_owned(),
+            status: task.status,
             deadline: task.deadline.map(format_deadline),
             expected_result: task.expected_result.clone(),
             description_lines: split_description_lines(&task.description),
@@ -86,6 +90,29 @@ impl GetTaskStatusUseCase {
             blocked_reason: task.blocked_reason.clone(),
             comments: comments.iter().map(TaskCommentView::from_comment).collect(),
             available_actions: available_actions(actor, &task),
+        })
+    }
+
+    pub async fn resolve_task_uid(&self, reference: &str) -> AppResult<Uuid> {
+        let Some(parsed_reference) = parse_task_reference(reference) else {
+            return Err(AppError::business_rule(
+                "TASK_REFERENCE_INVALID",
+                "Task reference must be a public task code like T-0042 or a UUID",
+                json!({ "reference": reference }),
+            ));
+        };
+
+        let task = match parsed_reference {
+            TaskReference::PublicId(task_id) => self.task_repository.find_by_id(task_id).await?,
+            TaskReference::Uid(task_uid) => self.task_repository.find_by_uid(task_uid).await?,
+        };
+
+        task.map(|value| value.task_uid).ok_or_else(|| {
+            AppError::not_found(
+                "TASK_NOT_FOUND",
+                "Task was not found",
+                json!({ "reference": reference }),
+            )
         })
     }
 
@@ -228,28 +255,16 @@ fn format_deadline(value: NaiveDate) -> String {
     value.format("%d.%m.%Y").to_string()
 }
 
-fn render_status(value: TaskStatus) -> &'static str {
-    match value {
-        TaskStatus::Created => "created",
-        TaskStatus::Sent => "sent",
-        TaskStatus::InProgress => "in_progress",
-        TaskStatus::Blocked => "blocked",
-        TaskStatus::InReview => "in_review",
-        TaskStatus::Completed => "completed",
-        TaskStatus::Cancelled => "cancelled",
-    }
-}
-
 fn render_history_status(value: Option<&str>) -> &'static str {
     match value {
-        Some("created") => "created",
-        Some("sent") => "sent",
-        Some("in_progress") => "in_progress",
-        Some("blocked") => "blocked",
-        Some("in_review") => "in_review",
-        Some("completed") => "completed",
-        Some("cancelled") => "cancelled",
-        Some(_) | None => "unknown",
+        Some("created") => "новая",
+        Some("sent") => "отправлена",
+        Some("in_progress") => "в работе",
+        Some("blocked") => "с блокером",
+        Some("in_review") => "на проверке",
+        Some("completed") => "завершена",
+        Some("cancelled") => "отменена",
+        Some(_) | None => "неизвестно",
     }
 }
 

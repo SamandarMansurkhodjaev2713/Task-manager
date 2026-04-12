@@ -5,6 +5,7 @@ use teloxide::Bot;
 use crate::application::use_cases::reassign_task::ReassignTaskOutcome;
 use crate::domain::message::IncomingMessage;
 use crate::domain::user::User;
+use crate::presentation::telegram::callbacks::TaskCardMode;
 use crate::presentation::telegram::interactions::{TaskInteractionKind, TaskInteractionSession};
 use crate::presentation::telegram::ui;
 
@@ -123,6 +124,7 @@ pub(crate) async fn handle_task_interaction_message(
                         chat_id,
                         session.task_uid,
                         session.origin,
+                        TaskCardMode::Compact,
                     )
                     .await
                 }
@@ -145,6 +147,7 @@ pub(crate) async fn handle_task_interaction_message(
                         chat_id,
                         session.task_uid,
                         session.origin,
+                        TaskCardMode::Compact,
                     )
                     .await
                 }
@@ -167,6 +170,7 @@ pub(crate) async fn handle_task_interaction_message(
                         chat_id,
                         session.task_uid,
                         session.origin,
+                        TaskCardMode::Compact,
                     )
                     .await
                 }
@@ -219,7 +223,7 @@ async fn start_task_interaction(
                 bot,
                 chat_id,
                 &text,
-                ui::task_detail_keyboard(&details, origin),
+                ui::task_detail_keyboard(&details, origin, TaskCardMode::Compact),
             )
             .await
         }
@@ -251,7 +255,7 @@ async fn show_prompt_again(
                 bot,
                 chat_id,
                 &text,
-                ui::task_detail_keyboard(&details, session.origin),
+                ui::task_detail_keyboard(&details, session.origin, TaskCardMode::Compact),
             )
             .await
         }

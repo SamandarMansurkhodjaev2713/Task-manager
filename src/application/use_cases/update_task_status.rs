@@ -13,6 +13,7 @@ use crate::domain::errors::{AppError, AppResult};
 use crate::domain::notification::{Notification, NotificationDeliveryState, NotificationType};
 use crate::domain::task::{Task, TaskStatus};
 use crate::domain::user::User;
+use crate::shared::task_codes::format_public_task_code_or_placeholder;
 
 pub struct UpdateTaskStatusUseCase {
     clock: Arc<dyn Clock>,
@@ -63,6 +64,7 @@ impl UpdateTaskStatusUseCase {
 
         Ok(TaskStatusSummary {
             task_uid,
+            public_code: format_public_task_code_or_placeholder(saved_task.id),
             status: saved_task.status,
             message: build_status_message(previous_status, saved_task.status),
         })

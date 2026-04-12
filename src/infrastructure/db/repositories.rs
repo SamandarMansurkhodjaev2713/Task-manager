@@ -283,7 +283,7 @@ impl TaskRepository for SqliteTaskRepository {
                 title, description, acceptance_criteria, expected_result, deadline, deadline_raw, original_message,
                 message_type, ai_model_used, ai_response_raw, status, priority, blocked_reason, telegram_chat_id, telegram_message_id,
                 telegram_task_message_id, tags, created_at, sent_at, started_at, blocked_at, review_requested_at, completed_at, cancelled_at, updated_at
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         )
         .bind(task.task_uid.to_string())
         .bind(task.version)

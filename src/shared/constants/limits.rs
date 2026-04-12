@@ -18,3 +18,6 @@ pub const MAX_DAILY_SUMMARY_TASKS: usize = 20;
 pub const MAX_DAILY_SUMMARY_PREVIEW_TASKS: usize = 5;
 pub const DAILY_SUMMARY_OPEN_TASK_SCAN_MULTIPLIER: usize = 10;
 pub const REMINDER_TASK_FETCH_LIMIT: i64 = 200;
+pub const PUBLIC_TASK_CODE_WIDTH: usize = 4;
+pub const MAX_TASK_BUTTON_TITLE_LENGTH: usize = 28;
+pub const MANAGER_INBOX_STALE_DAYS: i64 = 3;

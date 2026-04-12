@@ -3,6 +3,7 @@ use chrono::{NaiveDate, Utc};
 use telegram_task_bot::domain::employee::Employee;
 use telegram_task_bot::domain::task::{MessageType, StructuredTaskDraft, Task};
 
+#[allow(dead_code)]
 pub fn employee(full_name: &str, username: Option<&str>) -> Employee {
     let now = Utc::now();
     Employee {
@@ -19,6 +20,7 @@ pub fn employee(full_name: &str, username: Option<&str>) -> Employee {
     }
 }
 
+#[allow(dead_code)]
 pub fn task(deadline: Option<NaiveDate>) -> Task {
     Task::new(
         "telegram:1:1".to_owned(),

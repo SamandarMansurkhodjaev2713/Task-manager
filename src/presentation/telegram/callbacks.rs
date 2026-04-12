@@ -17,6 +17,14 @@ pub enum TaskListOrigin {
     Assigned,
     Created,
     Team,
+    Focus,
+    ManagerInbox,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskCardMode {
+    Compact,
+    Expanded,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,6 +50,7 @@ pub enum TelegramCallback {
     OpenTask {
         task_uid: Uuid,
         origin: TaskListOrigin,
+        mode: TaskCardMode,
     },
     UpdateTaskStatus {
         task_uid: Uuid,
@@ -92,10 +101,15 @@ pub fn encode_callback(callback: &TelegramCallback) -> String {
             origin_code(*origin),
             cursor.as_deref().unwrap_or(EMPTY_CURSOR)
         ),
-        TelegramCallback::OpenTask { task_uid, origin } => format!(
-            "{CALLBACK_GROUP_TASK}:open:{}:{}",
+        TelegramCallback::OpenTask {
+            task_uid,
+            origin,
+            mode,
+        } => format!(
+            "{CALLBACK_GROUP_TASK}:open:{}:{}:{}",
             origin_code(*origin),
-            task_uid
+            task_uid,
+            task_card_mode_code(*mode)
         ),
         TelegramCallback::UpdateTaskStatus {
             task_uid,
@@ -177,6 +191,12 @@ fn parse_callback_modern(value: &str) -> Option<TelegramCallback> {
         [CALLBACK_GROUP_TASK, "open", origin, task_uid] => Some(TelegramCallback::OpenTask {
             origin: parse_origin_code(origin)?,
             task_uid: Uuid::parse_str(task_uid).ok()?,
+            mode: TaskCardMode::Compact,
+        }),
+        [CALLBACK_GROUP_TASK, "open", origin, task_uid, mode] => Some(TelegramCallback::OpenTask {
+            origin: parse_origin_code(origin)?,
+            task_uid: Uuid::parse_str(task_uid).ok()?,
+            mode: parse_task_card_mode(mode)?,
         }),
         [CALLBACK_GROUP_TASK, "status", origin, task_uid, status] => {
             Some(TelegramCallback::UpdateTaskStatus {
@@ -238,6 +258,7 @@ fn parse_legacy_callback(value: &str) -> Option<TelegramCallback> {
         ["open", task_uid] => Some(TelegramCallback::OpenTask {
             task_uid: Uuid::parse_str(task_uid).ok()?,
             origin: TaskListOrigin::Assigned,
+            mode: TaskCardMode::Compact,
         }),
         ["block", task_uid] => Some(TelegramCallback::StartTaskBlockerInput {
             task_uid: Uuid::parse_str(task_uid).ok()?,
@@ -252,6 +273,8 @@ fn origin_code(origin: TaskListOrigin) -> &'static str {
         TaskListOrigin::Assigned => "assigned",
         TaskListOrigin::Created => "created",
         TaskListOrigin::Team => "team",
+        TaskListOrigin::Focus => "focus",
+        TaskListOrigin::ManagerInbox => "manager_inbox",
     }
 }
 
@@ -260,6 +283,23 @@ fn parse_origin_code(value: &str) -> Option<TaskListOrigin> {
         "assigned" => Some(TaskListOrigin::Assigned),
         "created" => Some(TaskListOrigin::Created),
         "team" => Some(TaskListOrigin::Team),
+        "focus" => Some(TaskListOrigin::Focus),
+        "manager_inbox" => Some(TaskListOrigin::ManagerInbox),
+        _ => None,
+    }
+}
+
+fn task_card_mode_code(mode: TaskCardMode) -> &'static str {
+    match mode {
+        TaskCardMode::Compact => "compact",
+        TaskCardMode::Expanded => "expanded",
+    }
+}
+
+fn parse_task_card_mode(value: &str) -> Option<TaskCardMode> {
+    match value {
+        "compact" => Some(TaskCardMode::Compact),
+        "expanded" => Some(TaskCardMode::Expanded),
         _ => None,
     }
 }
@@ -316,7 +356,7 @@ fn parse_draft_field(value: &str) -> Option<DraftEditField> {
 
 #[cfg(test)]
 mod tests {
-    use super::{encode_callback, parse_callback, TaskListOrigin, TelegramCallback};
+    use super::{encode_callback, parse_callback, TaskCardMode, TaskListOrigin, TelegramCallback};
     use crate::domain::task::TaskStatus;
     use uuid::Uuid;
 
@@ -364,6 +404,7 @@ mod tests {
             Some(TelegramCallback::OpenTask {
                 task_uid,
                 origin: TaskListOrigin::Assigned,
+                mode: TaskCardMode::Compact,
             })
         );
     }

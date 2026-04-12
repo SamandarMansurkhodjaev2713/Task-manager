@@ -12,16 +12,22 @@ Production-oriented Telegram bot for task intake, assignment, review, blockers, 
 - Separate task business state and notification delivery state
 - Background jobs for employee sync, notification delivery, deadline reminders, overdue alerts, and daily summaries
 - Manager/admin views for team tasks and team stats
+- Public task codes like `T-0042` instead of UUID-only user references
+- Compact and expanded task cards with highlighted next action
+- Personal `Мой фокус` screen and manager `Inbox менеджера`
 - Health and metrics endpoints
 
 ## Main product flows
 
 - `/start` opens a clear main menu with personal and manager sections
+- `/start` now exposes `Мой фокус` as the main daily-use entry point
 - Quick create is best when the task is already written in one message or voice note
 - Guided create is best when you want to avoid missing assignee, scope, or deadline
+- Task cards open in compact mode first and can expand into full details
 - Task cards support status changes, review flow, blockers, comments, and reassignment
 - Dangerous actions such as cancel require explicit confirmation
 - If the assignee is found but has not started the bot, the task is still created and the card shows that delivery is waiting for `/start`
+- Duplicate detection now opens the existing task instead of pretending a new one was created
 
 ## Task lifecycle
 
@@ -62,8 +68,8 @@ Telegram bots cannot initiate a private chat by `@username` alone. The bot store
 - `/my_tasks [cursor]`
 - `/created_tasks [cursor]`
 - `/team_tasks [cursor]`
-- `/status <task_uid>`
-- `/cancel_task <task_uid>`
+- `/status <T-0001|task_uid>`
+- `/cancel_task <T-0001|task_uid>`
 - `/stats`
 - `/team_stats`
 - `/settings`
@@ -79,6 +85,8 @@ Telegram bots cannot initiate a private chat by `@username` alone. The bot store
 - [ARCHITECTURE.md](./ARCHITECTURE.md)
 - [DEPLOYMENT.md](./DEPLOYMENT.md)
 - [docs/memory.md](./docs/memory.md)
+- [docs/system-model.md](./docs/system-model.md)
+- [docs/telegram-ux.md](./docs/telegram-ux.md)
 - [docs/quality-roadmap.md](./docs/quality-roadmap.md)
 
 ## Docker
@@ -90,7 +98,10 @@ The Docker setup is tuned to avoid the Windows host issues we saw earlier with S
 
 ## Local verification note
 
-In this Windows workspace `cargo check` is currently blocked by local application policy because the installed Rust toolchain is `x86_64-pc-windows-gnu` and the system refuses `gcc.exe`. Docker was not run in this iteration by request, so final end-to-end runtime verification should be done either:
+In this Windows workspace:
 
-- in Docker, or
-- after switching the local Rust toolchain to an allowed MSVC target
+- `cargo fmt --all` passes
+- `cargo check` passes
+- a full `cargo test` run succeeded during this iteration
+
+There is still one environment-specific caveat: repeated execution of some compiled test binaries may be blocked by Windows application control policy (`os error 4551`). This is not a code failure, but it is worth keeping in mind for local reruns.

@@ -1,5 +1,8 @@
-use crate::application::dto::task_views::{DeliveryStatus, TaskActionView};
+use crate::application::dto::task_views::DeliveryStatus;
+use crate::application::dto::task_views::TaskActionView;
+use crate::domain::task::TaskStatus;
 use crate::presentation::telegram::callbacks::TaskListOrigin;
+use crate::shared::constants::limits::MAX_TASK_BUTTON_TITLE_LENGTH;
 
 pub(crate) const MENU_EMOJI: &str = "🏠";
 pub(crate) const CREATE_EMOJI: &str = "🆕";
@@ -9,21 +12,17 @@ pub(crate) const TASKS_EMOJI: &str = "📋";
 pub(crate) const SETTINGS_EMOJI: &str = "⚙️";
 pub(crate) const HELP_EMOJI: &str = "❓";
 pub(crate) const SYNC_EMOJI: &str = "🔄";
-pub(crate) const DONE_EMOJI: &str = "✅";
-pub(crate) const CANCEL_EMOJI: &str = "⛔";
 pub(crate) const INFO_EMOJI: &str = "ℹ️";
 pub(crate) const TIME_EMOJI: &str = "⏰";
 
-const MAX_TASK_BUTTON_TITLE_LENGTH: usize = 24;
-
 pub(crate) fn action_label(action: TaskActionView) -> &'static str {
     match action {
-        TaskActionView::StartProgress => "▶️ В работу",
-        TaskActionView::SubmitForReview => "🧪 На проверку",
-        TaskActionView::ApproveReview => "✅ Принять",
-        TaskActionView::ReturnToWork => "↩️ Вернуть",
+        TaskActionView::StartProgress => "▶️ Взять в работу",
+        TaskActionView::SubmitForReview => "🧪 Отправить на проверку",
+        TaskActionView::ApproveReview => "✅ Принять работу",
+        TaskActionView::ReturnToWork => "↩️ Вернуть в работу",
         TaskActionView::Cancel => "⛔ Отменить",
-        TaskActionView::ReportBlocker => "🚧 Есть блокер",
+        TaskActionView::ReportBlocker => "🚧 Сообщить о блокере",
         TaskActionView::AddComment => "💬 Комментарий",
         TaskActionView::Reassign => "👤 Переназначить",
     }
@@ -34,32 +33,32 @@ pub(crate) fn back_label(origin: TaskListOrigin) -> &'static str {
         TaskListOrigin::Assigned => "↩️ К моим задачам",
         TaskListOrigin::Created => "↩️ К созданным мной",
         TaskListOrigin::Team => "↩️ К задачам команды",
+        TaskListOrigin::Focus => "↩️ К моему фокусу",
+        TaskListOrigin::ManagerInbox => "↩️ К inbox менеджера",
     }
 }
 
-pub(crate) fn status_badge(status: &str) -> &'static str {
+pub(crate) fn status_badge(status: TaskStatus) -> &'static str {
     match status {
-        "created" => "🆕",
-        "sent" => "📨",
-        "in_progress" => "▶️",
-        "blocked" => "🚧",
-        "in_review" => "🧪",
-        "completed" => "✅",
-        "cancelled" => "⛔",
-        _ => "ℹ️",
+        TaskStatus::Created => "🆕",
+        TaskStatus::Sent => "📨",
+        TaskStatus::InProgress => "▶️",
+        TaskStatus::Blocked => "🚧",
+        TaskStatus::InReview => "🧪",
+        TaskStatus::Completed => "✅",
+        TaskStatus::Cancelled => "⛔",
     }
 }
 
-pub(crate) fn status_label(status: &str) -> &'static str {
+pub(crate) fn status_label(status: TaskStatus) -> &'static str {
     match status {
-        "created" => "создана",
-        "sent" => "отправлена исполнителю",
-        "in_progress" => "в работе",
-        "blocked" => "есть блокер",
-        "in_review" => "на проверке",
-        "completed" => "завершена",
-        "cancelled" => "отменена",
-        _ => "неизвестно",
+        TaskStatus::Created => "новая",
+        TaskStatus::Sent => "отправлена исполнителю",
+        TaskStatus::InProgress => "в работе",
+        TaskStatus::Blocked => "есть блокер",
+        TaskStatus::InReview => "на проверке",
+        TaskStatus::Completed => "завершена",
+        TaskStatus::Cancelled => "отменена",
     }
 }
 
@@ -68,7 +67,7 @@ pub(crate) fn delivery_badge(delivery_status: DeliveryStatus) -> &'static str {
         DeliveryStatus::DeliveredToAssignee => "📬 Доставлено",
         DeliveryStatus::PendingDelivery => "🕓 В очереди",
         DeliveryStatus::PendingAssigneeRegistration => "👋 Ждёт /start",
-        DeliveryStatus::RetryPending => "🔁 Повторим",
+        DeliveryStatus::RetryPending => "🔁 Повторим отправку",
         DeliveryStatus::Failed => "⚠️ Не доставлено",
         DeliveryStatus::CreatorOnly => "👤 Только автору",
     }
@@ -80,10 +79,10 @@ pub(crate) fn truncate_title(value: &str) -> String {
         .take(MAX_TASK_BUTTON_TITLE_LENGTH)
         .collect::<String>();
     if value.chars().count() > MAX_TASK_BUTTON_TITLE_LENGTH {
-        format!("{truncated}…")
-    } else {
-        truncated
+        return format!("{truncated}…");
     }
+
+    truncated
 }
 
 pub(crate) fn join_numbered_lines(values: &[String]) -> String {
@@ -109,4 +108,24 @@ pub(crate) fn join_bullets(values: &[String]) -> String {
         .map(|value| format!("• {value}"))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+pub(crate) fn next_best_action(actions: &[TaskActionView]) -> Option<TaskActionView> {
+    const ACTION_PRIORITY: [TaskActionView; 5] = [
+        TaskActionView::StartProgress,
+        TaskActionView::SubmitForReview,
+        TaskActionView::ApproveReview,
+        TaskActionView::ReportBlocker,
+        TaskActionView::Reassign,
+    ];
+
+    ACTION_PRIORITY
+        .iter()
+        .copied()
+        .find(|candidate| actions.contains(candidate))
+        .or_else(|| actions.first().copied())
+}
+
+pub(crate) fn is_dangerous_action(action: TaskActionView) -> bool {
+    matches!(action, TaskActionView::Cancel)
 }

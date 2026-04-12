@@ -6,16 +6,19 @@ use crate::domain::comment::{CommentKind, TaskComment};
 use crate::domain::employee::EmployeeMatch;
 use crate::domain::notification::NotificationDeliveryState;
 use crate::domain::task::{Task, TaskStats, TaskStatus};
+use crate::shared::task_codes::format_public_task_code_or_placeholder;
 
 #[derive(Debug, Clone, Serialize)]
 pub enum TaskCreationOutcome {
     Created(TaskCreationSummary),
+    DuplicateFound(TaskCreationSummary),
     ClarificationRequired(ClarificationRequest),
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct TaskCreationSummary {
     pub task_uid: Uuid,
+    pub public_code: String,
     pub message: String,
     pub delivery_status: DeliveryStatus,
     pub task: TaskListItem,
@@ -29,6 +32,7 @@ pub struct ClarificationRequest {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct EmployeeCandidateView {
+    pub employee_id: Option<i64>,
     pub full_name: String,
     pub telegram_username: Option<String>,
     pub confidence: u8,
@@ -60,6 +64,7 @@ pub struct TaskListSection {
 #[derive(Debug, Clone, Serialize)]
 pub struct TaskListItem {
     pub task_uid: Uuid,
+    pub public_code: String,
     pub title: String,
     pub status: TaskStatus,
     pub deadline: Option<NaiveDate>,
@@ -71,6 +76,7 @@ pub struct TaskListItem {
 #[derive(Debug, Clone, Serialize)]
 pub struct TaskStatusSummary {
     pub task_uid: Uuid,
+    pub public_code: String,
     pub status: TaskStatus,
     pub message: String,
 }
@@ -85,8 +91,9 @@ pub struct TaskCommentView {
 #[derive(Debug, Clone, Serialize)]
 pub struct TaskStatusDetails {
     pub task_uid: Uuid,
+    pub public_code: String,
     pub title: String,
-    pub status: String,
+    pub status: TaskStatus,
     pub deadline: Option<String>,
     pub expected_result: String,
     pub description_lines: Vec<String>,
@@ -108,7 +115,7 @@ pub struct StatsView {
     pub average_completion_hours: Option<i64>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum TaskActionView {
     StartProgress,
     SubmitForReview,
@@ -124,6 +131,7 @@ impl TaskCreationSummary {
     pub fn from_task(task: &Task, message: String, delivery_status: DeliveryStatus) -> Self {
         Self {
             task_uid: task.task_uid,
+            public_code: format_public_task_code_or_placeholder(task.id),
             message,
             delivery_status,
             task: TaskListItem::from_task(task, None, Some(delivery_status), None),
@@ -134,6 +142,7 @@ impl TaskCreationSummary {
 impl EmployeeCandidateView {
     pub fn from_match(value: &EmployeeMatch) -> Self {
         Self {
+            employee_id: value.employee.id,
             full_name: value.employee.full_name.clone(),
             telegram_username: value.employee.telegram_username.clone(),
             confidence: value.confidence,
@@ -150,6 +159,7 @@ impl TaskListItem {
     ) -> Self {
         Self {
             task_uid: task.task_uid,
+            public_code: format_public_task_code_or_placeholder(task.id),
             title: task.title.clone(),
             status: task.status,
             deadline: task.deadline,
