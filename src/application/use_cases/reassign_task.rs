@@ -8,7 +8,9 @@ use crate::application::ports::repositories::{
     AuditLogRepository, NotificationRepository, TaskRepository,
 };
 use crate::application::ports::services::Clock;
-use crate::application::use_cases::assignee_resolution::{AssigneeResolution, AssigneeResolver};
+use crate::application::use_cases::assignee_resolution::{
+    AssigneeResolution, AssigneeResolver, ResolvedAssignee,
+};
 use crate::domain::audit::{AuditAction, AuditLogEntry};
 use crate::domain::errors::{AppError, AppResult};
 use crate::domain::notification::{Notification, NotificationDeliveryState, NotificationType};
@@ -67,11 +69,14 @@ impl ReassignTaskUseCase {
         authorize_reassign(actor, &task)?;
 
         let resolution = self.assignee_resolver.resolve(assignee_query).await?;
-        let AssigneeResolution::Resolved { user, employee } = resolution else {
-            let AssigneeResolution::ClarificationRequired(request) = resolution else {
-                unreachable!("resolver must produce a known outcome");
-            };
-            return Ok(ReassignTaskOutcome::ClarificationRequired(request));
+        let (user, employee) = match resolution {
+            AssigneeResolution::Resolved(resolved) => {
+                let ResolvedAssignee { user, employee } = *resolved;
+                (user, employee)
+            }
+            AssigneeResolution::ClarificationRequired(request) => {
+                return Ok(ReassignTaskOutcome::ClarificationRequired(request));
+            }
         };
 
         let reassigned_task = task.reassign(
@@ -163,12 +168,18 @@ fn authorize_reassign(actor: &User, task: &crate::domain::task::Task) -> AppResu
         ));
     };
 
-    if actor.role.is_manager_or_admin() || actor_id == task.created_by_user_id {
+    let can_reassign = actor.role.is_manager_or_admin()
+        || task.created_by_user_id == actor_id
+        || task.assigned_to_user_id == Some(actor_id);
+    if can_reassign {
         return Ok(());
     }
 
     Err(AppError::unauthorized(
-        "Only the creator, manager or admin can reassign a task",
-        json!({ "task_uid": task.task_uid }),
+        "Only the creator, assignee, manager, or admin can reassign a task",
+        json!({
+            "actor_user_id": actor_id,
+            "task_uid": task.task_uid,
+        }),
     ))
 }

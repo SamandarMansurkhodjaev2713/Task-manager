@@ -12,7 +12,9 @@ use crate::application::ports::repositories::{
     AuditLogRepository, NotificationRepository, PersistedTask, TaskRepository, UserRepository,
 };
 use crate::application::ports::services::{Clock, SpeechToTextService, TaskGenerator};
-use crate::application::use_cases::assignee_resolution::{AssigneeResolution, AssigneeResolver};
+use crate::application::use_cases::assignee_resolution::{
+    AssigneeResolution, AssigneeResolver, ResolvedAssignee,
+};
 use crate::domain::audit::{AuditAction, AuditLogEntry};
 use crate::domain::errors::{AppError, AppResult};
 use crate::domain::message::{IncomingMessage, MessageContent};
@@ -70,7 +72,10 @@ impl CreateTaskFromMessageUseCase {
         let assignee_resolution = self.resolve_assignee(&parsed_request).await?;
 
         let (assignee_user, assignee_employee) = match assignee_resolution {
-            AssigneeResolution::Resolved { user, employee } => (user, employee),
+            AssigneeResolution::Resolved(resolved) => {
+                let ResolvedAssignee { user, employee } = *resolved;
+                (user, employee)
+            }
             AssigneeResolution::ClarificationRequired(request) => {
                 return Ok(TaskCreationOutcome::ClarificationRequired(request));
             }
@@ -135,6 +140,17 @@ impl CreateTaskFromMessageUseCase {
         ))
     }
 
+    pub async fn transcribe_voice_message(&self, message: &IncomingMessage) -> AppResult<String> {
+        match &message.content {
+            MessageContent::Voice { voice } => self.speech_to_text_service.transcribe(voice).await,
+            _ => Err(AppError::business_rule(
+                "VOICE_MESSAGE_REQUIRED",
+                "Voice transcription preview requires a voice message",
+                json!({ "message_type": message_type_label(&message.content) }),
+            )),
+        }
+    }
+
     async fn extract_original_text(&self, message: &IncomingMessage) -> AppResult<String> {
         match &message.content {
             MessageContent::Text { text } | MessageContent::Command { text } => Ok(text.clone()),
@@ -152,17 +168,17 @@ impl CreateTaskFromMessageUseCase {
         parsed_request: &crate::domain::message::ParsedTaskRequest,
     ) -> AppResult<AssigneeResolution> {
         if parsed_request.explicit_unassigned {
-            return Ok(AssigneeResolution::Resolved {
+            return Ok(AssigneeResolution::Resolved(Box::new(ResolvedAssignee {
                 user: None,
                 employee: None,
-            });
+            })));
         }
 
         let Some(assignee_query) = parsed_request.assignee_name.as_deref() else {
-            return Ok(AssigneeResolution::Resolved {
+            return Ok(AssigneeResolution::Resolved(Box::new(ResolvedAssignee {
                 user: None,
                 employee: None,
-            });
+            })));
         };
 
         self.assignee_resolver.resolve(assignee_query).await

@@ -321,6 +321,32 @@ impl Task {
         Ok(next_task)
     }
 
+    /// Late registration links an already assigned employee directory record to a concrete user
+    /// account without resetting the current business status of the task.
+    pub fn link_registered_assignee(
+        &self,
+        assigned_to_user_id: i64,
+        now: DateTime<Utc>,
+    ) -> AppResult<Self> {
+        if self.assigned_to_employee_id.is_none() {
+            return Err(AppError::business_rule(
+                "TASK_EMPLOYEE_ASSIGNMENT_MISSING",
+                "Task cannot be linked to a registered assignee without an employee assignment",
+                json!({ "task_uid": self.task_uid }),
+            ));
+        }
+
+        if self.assigned_to_user_id == Some(assigned_to_user_id) {
+            return Ok(self.clone());
+        }
+
+        let mut next_task = self.clone();
+        next_task.version += 1;
+        next_task.assigned_to_user_id = Some(assigned_to_user_id);
+        next_task.updated_at = now;
+        Ok(next_task)
+    }
+
     pub fn review_required(&self) -> bool {
         matches!(self.assigned_to_user_id, Some(user_id) if user_id != self.created_by_user_id)
     }
@@ -365,26 +391,26 @@ impl Task {
 
 impl TaskStatus {
     pub fn can_transition_to(self, next: Self) -> bool {
-        match (self, next) {
+        matches!(
+            (self, next),
             (Self::Created, Self::Sent)
-            | (Self::Created, Self::InProgress)
-            | (Self::Created, Self::Blocked)
-            | (Self::Created, Self::Cancelled)
-            | (Self::Sent, Self::InProgress)
-            | (Self::Sent, Self::Blocked)
-            | (Self::Sent, Self::InReview)
-            | (Self::Sent, Self::Cancelled)
-            | (Self::InProgress, Self::Blocked)
-            | (Self::InProgress, Self::InReview)
-            | (Self::InProgress, Self::Cancelled)
-            | (Self::Blocked, Self::InProgress)
-            | (Self::Blocked, Self::InReview)
-            | (Self::Blocked, Self::Cancelled)
-            | (Self::InReview, Self::InProgress)
-            | (Self::InReview, Self::Completed)
-            | (Self::InReview, Self::Cancelled) => true,
-            _ => false,
-        }
+                | (Self::Created, Self::InProgress)
+                | (Self::Created, Self::Blocked)
+                | (Self::Created, Self::Cancelled)
+                | (Self::Sent, Self::InProgress)
+                | (Self::Sent, Self::Blocked)
+                | (Self::Sent, Self::InReview)
+                | (Self::Sent, Self::Cancelled)
+                | (Self::InProgress, Self::Blocked)
+                | (Self::InProgress, Self::InReview)
+                | (Self::InProgress, Self::Cancelled)
+                | (Self::Blocked, Self::InProgress)
+                | (Self::Blocked, Self::InReview)
+                | (Self::Blocked, Self::Cancelled)
+                | (Self::InReview, Self::InProgress)
+                | (Self::InReview, Self::Completed)
+                | (Self::InReview, Self::Cancelled)
+        )
     }
 
     pub fn is_terminal(self) -> bool {

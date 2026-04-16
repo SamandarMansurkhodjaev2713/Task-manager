@@ -44,6 +44,11 @@ pub trait TaskRepository: Send + Sync {
         cursor: Option<String>,
         limit: u32,
     ) -> AppResult<Vec<Task>>;
+    async fn list_open_assigned_to_employee_without_user(
+        &self,
+        employee_id: i64,
+        limit: i64,
+    ) -> AppResult<Vec<Task>>;
     async fn list_created_by_user(
         &self,
         user_id: i64,
@@ -80,6 +85,7 @@ pub trait NotificationRepository: Send + Sync {
         error_code: &'static str,
     ) -> AppResult<()>;
     async fn mark_failed(&self, notification_id: i64, error_code: &'static str) -> AppResult<()>;
+    async fn requeue(&self, notification_id: i64) -> AppResult<()>;
     async fn find_latest_for_task_and_recipient(
         &self,
         task_id: i64,

@@ -24,7 +24,42 @@ User-facing task identifiers are short codes like:
 - `T-0042`
 - `T-1543`
 
-UUID remains internal and still works for backward compatibility, but the default UX should use the public code everywhere.
+UUID remains internal and still works for backward compatibility, but the default UX uses the public code everywhere.
+
+## Screen lifecycle
+
+Navigation inside the bot follows a hybrid model:
+
+- screen navigation is edited in place
+- event notifications remain separate messages
+- fallback to a new screen message happens only when Telegram editing is unavailable
+
+### Edited in place
+
+- main menu
+- help
+- profile/settings
+- `Мой фокус`
+- `Мои задачи`
+- `Созданные мной`
+- `Командные задачи`
+- `Inbox менеджера`
+- task list pagination
+- compact and expanded task card
+- cancel confirmation
+- guided create steps
+- quick create prompt
+- comment, blocker, and reassign prompts
+
+### Sent as separate messages
+
+- task assignment notifications
+- reminders
+- daily digests
+- overdue alerts
+- review requested notifications
+- blocker escalation notifications
+- reassignment notifications
 
 ## Task card
 
@@ -39,8 +74,15 @@ Compact card contains:
 - deadline
 - assignee
 - delivery status
+- short delivery explanation
+- current blocker or risk note when it matters
 - next best action
 - short task preview
+- optional success/error notice banner at the top
+
+If delivery is waiting for assignee registration:
+- the compact card explains that the task is already saved
+- the card offers a dedicated help screen with a ready-to-forward instruction for the employee
 
 Expanded card contains:
 - full task description
@@ -94,6 +136,16 @@ Use when:
 - speed is more important than control
 - voice or one-shot text is convenient
 
+### Voice create
+
+Voice is a first-class creation flow:
+
+1. user sends a voice message
+2. the bot transcribes it
+3. the bot shows one confirmation screen with the transcript
+4. the user can confirm, edit, or cancel
+5. only then is the task created
+
 ### Guided create
 
 Use when:
@@ -103,16 +155,16 @@ Use when:
 
 ## Duplicate behavior
 
-Duplicate detection must be truthful.
+Duplicate detection is truthful.
 
 If the same source message was already processed:
-- do not say “task created”
-- explain that the existing task was found
-- open the existing card
+- the bot does not say “task created”
+- it explains that the existing task was found
+- it offers the existing card
 
 ## Delivery visibility
 
-Delivery state must be visible separately from business state.
+Delivery state is shown separately from business state.
 
 Possible user-facing meanings:
 - delivered
@@ -128,4 +180,6 @@ Possible user-facing meanings:
 - short, live, direct text
 - no machine labels in user-facing copy
 - dangerous actions require confirmation
+- stale buttons must fail safely
 - the interface should help the user decide what to do next in seconds
+- the chat should not be polluted by repeated menu and card messages

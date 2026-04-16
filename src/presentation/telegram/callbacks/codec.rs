@@ -1,7 +1,8 @@
 use uuid::Uuid;
 
-use crate::application::dto::task_views::TaskActionView;
 use crate::domain::task::TaskStatus;
+
+use super::types::{DraftEditField, TaskCardMode, TaskListOrigin, TelegramCallback};
 
 const CALLBACK_GROUP_MENU: &str = "m";
 const CALLBACK_GROUP_LIST: &str = "l";
@@ -9,83 +10,7 @@ const CALLBACK_GROUP_TASK: &str = "t";
 const CALLBACK_GROUP_CREATE: &str = "c";
 const CALLBACK_GROUP_DRAFT: &str = "d";
 const CALLBACK_GROUP_INPUT: &str = "i";
-
 const EMPTY_CURSOR: &str = "_";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TaskListOrigin {
-    Assigned,
-    Created,
-    Team,
-    Focus,
-    ManagerInbox,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TaskCardMode {
-    Compact,
-    Expanded,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DraftEditField {
-    Assignee,
-    Description,
-    Deadline,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TelegramCallback {
-    MenuHome,
-    MenuHelp,
-    MenuSettings,
-    MenuStats,
-    MenuTeamStats,
-    MenuCreate,
-    MenuSyncEmployees,
-    ListTasks {
-        origin: TaskListOrigin,
-        cursor: Option<String>,
-    },
-    OpenTask {
-        task_uid: Uuid,
-        origin: TaskListOrigin,
-        mode: TaskCardMode,
-    },
-    UpdateTaskStatus {
-        task_uid: Uuid,
-        next_status: TaskStatus,
-        origin: TaskListOrigin,
-    },
-    ConfirmTaskCancel {
-        task_uid: Uuid,
-        origin: TaskListOrigin,
-    },
-    ExecuteTaskCancel {
-        task_uid: Uuid,
-        origin: TaskListOrigin,
-    },
-    StartTaskCommentInput {
-        task_uid: Uuid,
-        origin: TaskListOrigin,
-    },
-    StartTaskBlockerInput {
-        task_uid: Uuid,
-        origin: TaskListOrigin,
-    },
-    StartTaskReassignInput {
-        task_uid: Uuid,
-        origin: TaskListOrigin,
-    },
-    StartQuickCreate,
-    StartGuidedCreate,
-    DraftSkipAssignee,
-    DraftSkipDeadline,
-    DraftSubmit,
-    DraftEdit {
-        field: DraftEditField,
-    },
-}
 
 pub fn encode_callback(callback: &TelegramCallback) -> String {
     match callback {
@@ -146,8 +71,17 @@ pub fn encode_callback(callback: &TelegramCallback) -> String {
             origin_code(*origin),
             task_uid
         ),
+        TelegramCallback::ShowDeliveryHelp { task_uid, origin } => format!(
+            "{CALLBACK_GROUP_INPUT}:delivery_help:{}:{}",
+            origin_code(*origin),
+            task_uid
+        ),
         TelegramCallback::StartQuickCreate => format!("{CALLBACK_GROUP_CREATE}:quick"),
         TelegramCallback::StartGuidedCreate => format!("{CALLBACK_GROUP_CREATE}:guided"),
+        TelegramCallback::VoiceCreateConfirm => format!("{CALLBACK_GROUP_CREATE}:voice_confirm"),
+        TelegramCallback::VoiceCreateEdit => format!("{CALLBACK_GROUP_CREATE}:voice_edit"),
+        TelegramCallback::VoiceCreateBack => format!("{CALLBACK_GROUP_CREATE}:voice_back"),
+        TelegramCallback::VoiceCreateCancel => format!("{CALLBACK_GROUP_CREATE}:voice_cancel"),
         TelegramCallback::DraftSkipAssignee => format!("{CALLBACK_GROUP_DRAFT}:skip_assignee"),
         TelegramCallback::DraftSkipDeadline => format!("{CALLBACK_GROUP_DRAFT}:skip_deadline"),
         TelegramCallback::DraftSubmit => format!("{CALLBACK_GROUP_DRAFT}:submit"),
@@ -159,19 +93,6 @@ pub fn encode_callback(callback: &TelegramCallback) -> String {
 
 pub fn parse_callback(value: &str) -> Option<TelegramCallback> {
     parse_legacy_callback(value).or_else(|| parse_callback_modern(value))
-}
-
-pub fn action_to_status(action: TaskActionView) -> Option<TaskStatus> {
-    match action {
-        TaskActionView::StartProgress => Some(TaskStatus::InProgress),
-        TaskActionView::SubmitForReview => Some(TaskStatus::InReview),
-        TaskActionView::ApproveReview => Some(TaskStatus::Completed),
-        TaskActionView::ReturnToWork => Some(TaskStatus::InProgress),
-        TaskActionView::Cancel
-        | TaskActionView::ReportBlocker
-        | TaskActionView::AddComment
-        | TaskActionView::Reassign => None,
-    }
 }
 
 fn parse_callback_modern(value: &str) -> Option<TelegramCallback> {
@@ -235,8 +156,18 @@ fn parse_callback_modern(value: &str) -> Option<TelegramCallback> {
                 task_uid: Uuid::parse_str(task_uid).ok()?,
             })
         }
+        [CALLBACK_GROUP_INPUT, "delivery_help", origin, task_uid] => {
+            Some(TelegramCallback::ShowDeliveryHelp {
+                origin: parse_origin_code(origin)?,
+                task_uid: Uuid::parse_str(task_uid).ok()?,
+            })
+        }
         [CALLBACK_GROUP_CREATE, "quick"] => Some(TelegramCallback::StartQuickCreate),
         [CALLBACK_GROUP_CREATE, "guided"] => Some(TelegramCallback::StartGuidedCreate),
+        [CALLBACK_GROUP_CREATE, "voice_confirm"] => Some(TelegramCallback::VoiceCreateConfirm),
+        [CALLBACK_GROUP_CREATE, "voice_edit"] => Some(TelegramCallback::VoiceCreateEdit),
+        [CALLBACK_GROUP_CREATE, "voice_back"] => Some(TelegramCallback::VoiceCreateBack),
+        [CALLBACK_GROUP_CREATE, "voice_cancel"] => Some(TelegramCallback::VoiceCreateCancel),
         [CALLBACK_GROUP_DRAFT, "skip_assignee"] => Some(TelegramCallback::DraftSkipAssignee),
         [CALLBACK_GROUP_DRAFT, "skip_deadline"] => Some(TelegramCallback::DraftSkipDeadline),
         [CALLBACK_GROUP_DRAFT, "submit"] => Some(TelegramCallback::DraftSubmit),
@@ -356,9 +287,13 @@ fn parse_draft_field(value: &str) -> Option<DraftEditField> {
 
 #[cfg(test)]
 mod tests {
-    use super::{encode_callback, parse_callback, TaskCardMode, TaskListOrigin, TelegramCallback};
-    use crate::domain::task::TaskStatus;
     use uuid::Uuid;
+
+    use super::{encode_callback, parse_callback};
+    use crate::domain::task::TaskStatus;
+    use crate::presentation::telegram::callbacks::{
+        TaskCardMode, TaskListOrigin, TelegramCallback,
+    };
 
     #[test]
     fn given_modern_status_callback_when_parse_then_roundtrip_succeeds() {
@@ -407,5 +342,29 @@ mod tests {
                 mode: TaskCardMode::Compact,
             })
         );
+    }
+
+    #[test]
+    fn given_voice_confirm_callback_when_roundtrip_then_it_parses_back() {
+        let callback = TelegramCallback::VoiceCreateConfirm;
+
+        let encoded = encode_callback(&callback);
+        let parsed = parse_callback(&encoded);
+
+        assert_eq!(parsed, Some(callback));
+    }
+
+    #[test]
+    fn given_delivery_help_callback_when_roundtrip_then_it_parses_back() {
+        let task_uid = Uuid::now_v7();
+        let callback = TelegramCallback::ShowDeliveryHelp {
+            task_uid,
+            origin: TaskListOrigin::Created,
+        };
+
+        let encoded = encode_callback(&callback);
+        let parsed = parse_callback(&encoded);
+
+        assert_eq!(parsed, Some(callback));
     }
 }

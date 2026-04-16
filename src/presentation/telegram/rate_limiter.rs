@@ -20,3 +20,9 @@ impl TelegramRateLimiter {
         self.limiter.check_key(&actor_key).is_ok()
     }
 }
+
+impl Default for TelegramRateLimiter {
+    fn default() -> Self {
+        Self::new()
+    }
+}

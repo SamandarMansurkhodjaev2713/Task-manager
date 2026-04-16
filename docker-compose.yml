@@ -1,34 +1,74 @@
 services:
+  telegram-task-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    env_file:
+      - .env
+    environment:
+      APP_DATA_DIR: /app/data
+      DATABASE_URL: sqlite:///app/data/app.db
+      RUST_BACKTRACE: "1"
+    ports:
+      - "8080:8080"
+    volumes:
+      - bot_sqlite_data:/app/data
+    tmpfs:
+      - /tmp
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 5
+    init: true
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+    restart: unless-stopped
+    stop_grace_period: 30s
+
   tests:
     profiles:
       - test
     build:
       context: .
       dockerfile: Dockerfile
-    env_file:
-      - .env
+      target: test-runner
+    working_dir: /app
     environment:
-      CARGO_BUILD_JOBS: "1"
+      TELEGRAM_BOT_TOKEN: test_token
+      GOOGLE_SHEETS_ID: test_sheet
+      GOOGLE_SHEETS_RANGE: Employees!A:F
+      GOOGLE_SHEETS_API_KEY: test_key
+      GOOGLE_GEMINI_API_KEY: test_key
+      OPENAI_API_KEY: test_key
       DATABASE_URL: sqlite:///tmp/tests.db
       RUST_BACKTRACE: "1"
-      RUSTFLAGS: -Cdebuginfo=0
     command: ["cargo", "test", "--workspace", "-j", "1"]
     restart: "no"
 
-  telegram-task-bot:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    env_file:
-      - .env
-    environment:
-      DATABASE_URL: sqlite:///app/data/app.db
-    user: "0:0"
-    ports:
-      - "8080:8080"
-    volumes:
-      - bot_sqlite_data:/app/data
-    restart: unless-stopped
+  smoke-check:
+    profiles:
+      - smoke
+    image: curlimages/curl:8.17.0
+    depends_on:
+      telegram-task-bot:
+        condition: service_healthy
+    command:
+      [
+        "sh",
+        "-c",
+        "curl -fsS http://telegram-task-bot:8080/healthz && curl -fsS http://telegram-task-bot:8080/metrics >/dev/null",
+      ]
+    restart: "no"
 
 volumes:
   bot_sqlite_data:

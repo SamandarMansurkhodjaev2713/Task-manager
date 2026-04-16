@@ -29,6 +29,15 @@ Expected outcomes:
 - `DuplicateFound`
 - `ClarificationRequired`
 
+### Voice create
+
+Voice creation is a guarded flow:
+1. receive voice
+2. transcribe
+3. show confirmation screen
+4. allow confirm, edit, or cancel
+5. create only after explicit confirmation
+
 ### Guided create
 
 Use when the author needs help with assignee, wording, or deadline.
@@ -49,6 +58,8 @@ The default task card is compact and action-oriented:
 - deadline
 - assignee
 - delivery
+- delivery explanation
+- blocker or review risk when relevant
 - next best action
 
 The expanded card is a details view:
@@ -74,23 +85,27 @@ Allowed task states:
 Allowed transitions:
 - `created -> sent`
 - `created -> in_progress`
+- `created -> blocked`
 - `created -> cancelled`
 - `sent -> in_progress`
 - `sent -> blocked`
+- `sent -> in_review`
 - `sent -> cancelled`
 - `in_progress -> blocked`
 - `in_progress -> in_review`
 - `in_progress -> cancelled`
 - `blocked -> in_progress`
+- `blocked -> in_review`
 - `blocked -> cancelled`
 - `in_review -> in_progress`
 - `in_review -> completed`
-- `completed -> in_progress`
+- `in_review -> cancelled`
 
 Disallowed examples:
 - `cancelled -> cancelled`
 - `completed -> completed`
 - `cancelled -> in_progress`
+- `completed -> in_progress`
 
 Repeated valid actions must be idempotent and should not create duplicate audit noise.
 
@@ -109,6 +124,16 @@ User-facing meanings:
 - `failed`: delivery failed after retries
 
 Business state must never imply delivery success.
+
+## Screen lifecycle
+
+The Telegram UI uses a hybrid screen model:
+
+- navigation screens are edited in place
+- event notifications remain separate messages
+- a safe fallback sends a new screen only when Telegram editing is unavailable
+
+The bot tracks one active screen per chat. Stale callbacks from older messages are rejected for mutating actions and redirected safely for navigation actions.
 
 ## Authorization model
 
@@ -167,34 +192,32 @@ Row-level authorization is enforced in application policies, not only at Telegra
 ## Dedupe rules
 
 - source message key is the primary dedupe mechanism for intake
-- callback payload plus task version is the safety boundary for stale UI actions
+- active-screen message identity is the current stale-UI safety boundary for callback handling
 - business duplicates are surfaced truthfully, not hidden behind success wording
 
 ## Assignee resolution rules
 
 Resolution order:
 1. exact Telegram username match
-2. exact registered user match
-3. employee directory match
-4. recent or likely collaborators
-5. ambiguity flow
-6. assign later
+2. exact employee directory match
+3. fuzzy employee matching
+4. ambiguity flow
 
 If multiple candidates match:
-- show a button-based choice flow
-- offer `None of them`
-- offer `Assign later`
+- return clarification
+- show likely candidates
 
 If the assignee exists in directory but has never started the bot:
 - create the task
 - show delivery as waiting for registration
+- show a dedicated help path for forwarding a simple `/start` instruction
 - do not pretend the message was delivered
 
 ## Public task codes
 
 - user-facing references use codes like `T-0042`
 - UUID stays internal
-- `/status` and related flows must accept both public code and UUID for compatibility
+- `/status` and related flows accept both public code and UUID for compatibility
 
 ## System invariants
 
@@ -205,7 +228,9 @@ If the assignee exists in directory but has never started the bot:
 - dangerous actions always require confirmation
 - list items always carry enough context to understand urgency
 - human-friendly public task code is the default reference everywhere user-facing
-- audit history should record meaningful changes only
+- audit history records meaningful changes only
+- navigation flows should not spam the chat
+- voice intake never creates a task before explicit confirmation
 
 ## Priority roadmap
 
@@ -218,6 +243,7 @@ If the assignee exists in directory but has never started the bot:
 - focus screen
 - action prioritization
 - stale callback safety
+- edit-in-place navigation
 
 ### Second wave
 
@@ -226,4 +252,4 @@ If the assignee exists in directory but has never started the bot:
 - richer blocker escalation
 - digest tuning and quiet reminder policies
 - deeper handler decomposition
-
+- version-aware stale callback protection

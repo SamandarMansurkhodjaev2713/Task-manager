@@ -1,20 +1,22 @@
-use teloxide::prelude::Requester;
 use teloxide::types::ChatId;
 use teloxide::Bot;
 
 use crate::application::use_cases::reassign_task::ReassignTaskOutcome;
 use crate::domain::message::IncomingMessage;
 use crate::domain::user::User;
+use crate::presentation::telegram::active_screens::ScreenDescriptor;
 use crate::presentation::telegram::callbacks::TaskCardMode;
 use crate::presentation::telegram::interactions::{TaskInteractionKind, TaskInteractionSession};
 use crate::presentation::telegram::ui;
 
-use super::dispatcher_handlers::show_task_details;
+use super::dispatcher_handlers::{show_task_details_with_notice, TaskScreenContext};
 use super::dispatcher_transport::{send_error, send_screen};
 use super::TelegramRuntime;
 
 const TASK_INTERACTION_TEXT_REQUIRED_MESSAGE: &str =
-    "Здесь нужен текст одним сообщением. Напишите коротко и по делу.";
+    "Нужен один короткий текст сообщением. Напишите по делу, и я сразу обновлю карточку.";
+const COMMENT_SAVED_NOTICE: &str = "💬 Комментарий добавлен.";
+const BLOCKER_SAVED_NOTICE: &str = "🚧 Блокер сохранён и показан в карточке.";
 
 pub(crate) async fn start_task_comment_input(
     bot: &Bot,
@@ -114,17 +116,19 @@ pub(crate) async fn handle_task_interaction_message(
                 .execute(&actor, session.task_uid, text)
                 .await
             {
-                Ok(message) => {
+                Ok(_) => {
                     state.task_interactions.clear(chat_id.0).await;
-                    bot.send_message(chat_id, message).await?;
-                    show_task_details(
+                    show_task_details_with_notice(
                         bot,
                         state,
                         &actor,
-                        chat_id,
-                        session.task_uid,
-                        session.origin,
-                        TaskCardMode::Compact,
+                        TaskScreenContext {
+                            chat_id,
+                            task_uid: session.task_uid,
+                            origin: session.origin,
+                            mode: TaskCardMode::Compact,
+                        },
+                        Some(COMMENT_SAVED_NOTICE),
                     )
                     .await
                 }
@@ -137,17 +141,19 @@ pub(crate) async fn handle_task_interaction_message(
                 .execute(&actor, session.task_uid, text)
                 .await
             {
-                Ok(summary) => {
+                Ok(_) => {
                     state.task_interactions.clear(chat_id.0).await;
-                    bot.send_message(chat_id, summary.message).await?;
-                    show_task_details(
+                    show_task_details_with_notice(
                         bot,
                         state,
                         &actor,
-                        chat_id,
-                        session.task_uid,
-                        session.origin,
-                        TaskCardMode::Compact,
+                        TaskScreenContext {
+                            chat_id,
+                            task_uid: session.task_uid,
+                            origin: session.origin,
+                            mode: TaskCardMode::Compact,
+                        },
+                        Some(BLOCKER_SAVED_NOTICE),
                     )
                     .await
                 }
@@ -162,21 +168,23 @@ pub(crate) async fn handle_task_interaction_message(
             {
                 Ok(ReassignTaskOutcome::Reassigned(summary)) => {
                     state.task_interactions.clear(chat_id.0).await;
-                    bot.send_message(chat_id, summary.message).await?;
-                    show_task_details(
+                    show_task_details_with_notice(
                         bot,
                         state,
                         &actor,
-                        chat_id,
-                        session.task_uid,
-                        session.origin,
-                        TaskCardMode::Compact,
+                        TaskScreenContext {
+                            chat_id,
+                            task_uid: session.task_uid,
+                            origin: session.origin,
+                            mode: TaskCardMode::Compact,
+                        },
+                        Some(&summary.message),
                     )
                     .await
                 }
                 Ok(ReassignTaskOutcome::ClarificationRequired(request)) => {
                     let text = format!(
-                        "ℹ️ {}\n\nПопробуйте ещё раз одним сообщением.",
+                        "ℹ️ {}\n\nПопробуйте указать исполнителя ещё раз одним сообщением.",
                         request.message
                     );
                     show_prompt_again(bot, state, &actor, chat_id, session, &text).await
@@ -221,7 +229,13 @@ async fn start_task_interaction(
             };
             send_screen(
                 bot,
+                state,
                 chat_id,
+                ScreenDescriptor::TaskInteractionPrompt {
+                    task_uid,
+                    origin,
+                    kind,
+                },
                 &text,
                 ui::task_detail_keyboard(&details, origin, TaskCardMode::Compact),
             )
@@ -253,7 +267,13 @@ async fn show_prompt_again(
             let text = format!("{prefix_message}\n\n{prompt}");
             send_screen(
                 bot,
+                state,
                 chat_id,
+                ScreenDescriptor::TaskInteractionPrompt {
+                    task_uid: session.task_uid,
+                    origin: session.origin,
+                    kind: session.kind,
+                },
                 &text,
                 ui::task_detail_keyboard(&details, session.origin, TaskCardMode::Compact),
             )

@@ -4,7 +4,8 @@ use super::ui_shared::{
     action_label, back_label, is_dangerous_action, next_best_action, status_badge, truncate_title,
 };
 use crate::application::dto::task_views::{
-    TaskActionView, TaskCreationOutcome, TaskListItem, TaskListPage, TaskStatusDetails,
+    DeliveryStatus, TaskActionView, TaskCreationOutcome, TaskListItem, TaskListPage,
+    TaskStatusDetails,
 };
 use crate::domain::user::User;
 use crate::presentation::telegram::callbacks::{
@@ -144,6 +145,16 @@ pub fn task_detail_keyboard(
         rows.push(dangerous_actions);
     }
 
+    if details.delivery_status == Some(DeliveryStatus::PendingAssigneeRegistration) {
+        rows.push(vec![button(
+            "👋 Как подключить исполнителя",
+            TelegramCallback::ShowDeliveryHelp {
+                task_uid: details.task_uid,
+                origin,
+            },
+        )]);
+    }
+
     rows.push(vec![task_view_toggle_button(details, origin, mode)]);
     rows.push(vec![button(back_label(origin), back_callback(origin))]);
     rows.push(vec![button("🏠 В меню", TelegramCallback::MenuHome)]);
@@ -169,6 +180,23 @@ pub fn cancel_confirmation_keyboard(
                 },
             ),
         ],
+        vec![button("🏠 В меню", TelegramCallback::MenuHome)],
+    ])
+}
+
+pub fn delivery_help_keyboard(
+    task_uid: uuid::Uuid,
+    origin: TaskListOrigin,
+) -> InlineKeyboardMarkup {
+    InlineKeyboardMarkup::new(vec![
+        vec![button(
+            "↩️ Вернуться к задаче",
+            TelegramCallback::OpenTask {
+                task_uid,
+                origin,
+                mode: TaskCardMode::Compact,
+            },
+        )],
         vec![button("🏠 В меню", TelegramCallback::MenuHome)],
     ])
 }
@@ -241,6 +269,30 @@ pub fn guided_confirmation_keyboard() -> InlineKeyboardMarkup {
                 field: DraftEditField::Deadline,
             },
         )],
+        vec![button("🏠 В меню", TelegramCallback::MenuHome)],
+    ])
+}
+
+pub fn voice_confirmation_keyboard() -> InlineKeyboardMarkup {
+    InlineKeyboardMarkup::new(vec![
+        vec![button(
+            "✅ Создать задачу",
+            TelegramCallback::VoiceCreateConfirm,
+        )],
+        vec![
+            button("✏️ Исправить текст", TelegramCallback::VoiceCreateEdit),
+            button("❌ Отменить", TelegramCallback::VoiceCreateCancel),
+        ],
+        vec![button("🏠 В меню", TelegramCallback::MenuHome)],
+    ])
+}
+
+pub fn voice_edit_keyboard() -> InlineKeyboardMarkup {
+    InlineKeyboardMarkup::new(vec![
+        vec![
+            button("↩️ Назад к расшифровке", TelegramCallback::VoiceCreateBack),
+            button("❌ Отменить", TelegramCallback::VoiceCreateCancel),
+        ],
         vec![button("🏠 В меню", TelegramCallback::MenuHome)],
     ])
 }

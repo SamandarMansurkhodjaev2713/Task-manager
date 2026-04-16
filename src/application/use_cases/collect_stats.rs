@@ -5,7 +5,7 @@ use crate::application::ports::repositories::TaskRepository;
 use crate::domain::errors::{AppError, AppResult};
 use crate::domain::user::User;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StatsScope {
     Personal,
     Team,

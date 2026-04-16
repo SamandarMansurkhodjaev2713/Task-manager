@@ -1,3 +1,4 @@
+pub mod active_screens;
 pub mod callbacks;
 pub mod commands;
 pub mod dispatcher;

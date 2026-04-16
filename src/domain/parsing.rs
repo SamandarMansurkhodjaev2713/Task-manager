@@ -197,7 +197,7 @@ fn build_description(
         .unwrap_or(without_assignee);
 
     normalize_whitespace(
-        &without_deadline.trim_matches(|symbol: char| symbol == '.' || symbol == ','),
+        without_deadline.trim_matches(|symbol: char| symbol == '.' || symbol == ','),
     )
 }
 

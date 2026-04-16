@@ -12,11 +12,13 @@ pub struct AssigneeResolver {
     employee_repository: Arc<dyn EmployeeRepository>,
 }
 
+pub struct ResolvedAssignee {
+    pub user: Option<User>,
+    pub employee: Option<Employee>,
+}
+
 pub enum AssigneeResolution {
-    Resolved {
-        user: Option<User>,
-        employee: Option<Employee>,
-    },
+    Resolved(Box<ResolvedAssignee>),
     ClarificationRequired(ClarificationRequest),
 }
 
@@ -34,10 +36,10 @@ impl AssigneeResolver {
     pub async fn resolve(&self, query: &str) -> AppResult<AssigneeResolution> {
         let normalized_query = query.trim();
         if normalized_query.is_empty() {
-            return Ok(AssigneeResolution::Resolved {
+            return Ok(AssigneeResolution::Resolved(Box::new(ResolvedAssignee {
                 user: None,
                 employee: None,
-            });
+            })));
         }
 
         let employees = self.employee_repository.list_active().await?;
@@ -59,10 +61,10 @@ impl AssigneeResolver {
                 let employee = candidate.employee;
                 let user =
                     resolve_user_from_employee(self.user_repository.as_ref(), &employee).await?;
-                return Ok(AssigneeResolution::Resolved {
+                return Ok(AssigneeResolution::Resolved(Box::new(ResolvedAssignee {
                     user,
                     employee: Some(employee),
-                });
+                })));
             }
             EmployeeMatchOutcome::NotFound => {}
         }
@@ -84,16 +86,18 @@ impl AssigneeResolver {
             .find_by_username(normalized_username)
             .await?;
         if user.is_some() {
-            return Ok(AssigneeResolution::Resolved {
+            return Ok(AssigneeResolution::Resolved(Box::new(ResolvedAssignee {
                 user,
                 employee: None,
-            });
+            })));
         }
 
-        Ok(AssigneeResolution::ClarificationRequired(ClarificationRequest {
-            message: "Этот @username пока не найден. Попросите исполнителя написать боту /start или укажите другое имя.".to_owned(),
-            candidates: Vec::new(),
-        }))
+        Ok(AssigneeResolution::ClarificationRequired(
+            ClarificationRequest {
+                message: "Этот @username пока не найден. Попросите исполнителя написать боту /start или укажите другое имя.".to_owned(),
+                candidates: Vec::new(),
+            },
+        ))
     }
 }
 

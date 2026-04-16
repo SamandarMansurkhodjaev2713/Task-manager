@@ -7,6 +7,7 @@ Production-oriented Telegram bot for task intake, assignment, review, blockers, 
 - Clean architecture with `presentation -> application -> domain <- infrastructure`
 - Telegram text and voice intake
 - Quick task creation and guided 3-step wizard
+- Voice task creation with mandatory confirmation before the task is created
 - Assignee resolution by `@username` or employee directory with ambiguity handling
 - SQLite persistence with migrations, optimistic locking, audit log, comments, and notifications queue
 - Separate task business state and notification delivery state
@@ -15,19 +16,23 @@ Production-oriented Telegram bot for task intake, assignment, review, blockers, 
 - Public task codes like `T-0042` instead of UUID-only user references
 - Compact and expanded task cards with highlighted next action
 - Personal `Мой фокус` screen and manager `Inbox менеджера`
+- Edit-in-place screen navigation for menu, lists, task cards, confirmations, and wizard flows
 - Health and metrics endpoints
 
 ## Main product flows
 
 - `/start` opens a clear main menu with personal and manager sections
-- `/start` now exposes `Мой фокус` as the main daily-use entry point
+- `/start` exposes `Мой фокус` as the main daily-use entry point
 - Quick create is best when the task is already written in one message or voice note
 - Guided create is best when you want to avoid missing assignee, scope, or deadline
 - Task cards open in compact mode first and can expand into full details
 - Task cards support status changes, review flow, blockers, comments, and reassignment
 - Dangerous actions such as cancel require explicit confirmation
 - If the assignee is found but has not started the bot, the task is still created and the card shows that delivery is waiting for `/start`
-- Duplicate detection now opens the existing task instead of pretending a new one was created
+- The task card explains what to do when the assignee has not started the bot yet and offers a dedicated help screen for that case
+- If the assignee starts the bot later, open employee-assigned tasks are linked automatically and assignment delivery is backfilled safely
+- Duplicate detection opens the existing task instead of pretending a new one was created
+- Navigation screens are edited in place, while real events such as assignment notifications and reminders remain separate messages
 
 ## Task lifecycle
 
@@ -87,14 +92,22 @@ Telegram bots cannot initiate a private chat by `@username` alone. The bot store
 - [docs/memory.md](./docs/memory.md)
 - [docs/system-model.md](./docs/system-model.md)
 - [docs/telegram-ux.md](./docs/telegram-ux.md)
+- [docs/operations.md](./docs/operations.md)
 - [docs/quality-roadmap.md](./docs/quality-roadmap.md)
 
 ## Docker
 
 - `docker compose up telegram-task-bot`
-- `docker compose run --rm tests`
+- `docker compose --profile test run --rm tests`
+- `docker compose --profile smoke run --rm smoke-check`
 
-The Docker setup is tuned to avoid the Windows host issues we saw earlier with SQLite bind mounts and high parallel Rust builds.
+The Docker setup now uses:
+- multi-stage build
+- separate test-runner stage
+- slim runtime image
+- non-root app execution through `gosu`
+- healthcheck-ready compose wiring
+- named volume persistence for SQLite
 
 ## Local verification note
 
@@ -102,6 +115,7 @@ In this Windows workspace:
 
 - `cargo fmt --all` passes
 - `cargo check` passes
-- a full `cargo test` run succeeded during this iteration
+- `cargo clippy --all-targets --all-features -- -D warnings` passes
+- targeted `cargo test` execution passes
 
-There is still one environment-specific caveat: repeated execution of some compiled test binaries may be blocked by Windows application control policy (`os error 4551`). This is not a code failure, but it is worth keeping in mind for local reruns.
+For final deploy confidence, keep Docker-based validation in the loop because it removes host-specific Windows variance from the verification path.

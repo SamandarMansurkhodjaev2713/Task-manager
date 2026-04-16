@@ -35,6 +35,7 @@ use crate::infrastructure::logging::init_metrics;
 use crate::infrastructure::scheduler::BackgroundJobs;
 use crate::infrastructure::telegram::bot_gateway::TeloxideNotifier;
 use crate::presentation::http::spawn_http_server;
+use crate::presentation::telegram::active_screens::ActiveScreenStore;
 use crate::presentation::telegram::dispatcher::{run_telegram_dispatcher, TelegramRuntime};
 use crate::presentation::telegram::drafts::CreationSessionStore;
 use crate::presentation::telegram::interactions::TaskInteractionSessionStore;
@@ -133,8 +134,12 @@ pub async fn run_application(config: AppConfig) -> AppResult<()> {
     ));
     let collect_stats_use_case = Arc::new(CollectStatsUseCase::new(task_repository.clone()));
     let register_user_use_case = Arc::new(RegisterUserUseCase::new(
+        clock.clone(),
         user_repository.clone(),
         employee_repository.clone(),
+        task_repository.clone(),
+        notification_repository.clone(),
+        audit_log_repository.clone(),
     ));
     let sync_employees_use_case = Arc::new(SyncEmployeesUseCase::new(
         employee_repository,
@@ -170,6 +175,7 @@ pub async fn run_application(config: AppConfig) -> AppResult<()> {
     let telegram_runtime = TelegramRuntime {
         notifier,
         rate_limiter: TelegramRateLimiter::new(),
+        active_screens: ActiveScreenStore::default(),
         creation_sessions: CreationSessionStore::default(),
         task_interactions: TaskInteractionSessionStore::default(),
         register_user_use_case,

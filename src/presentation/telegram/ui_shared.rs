@@ -73,6 +73,23 @@ pub(crate) fn delivery_badge(delivery_status: DeliveryStatus) -> &'static str {
     }
 }
 
+pub(crate) fn delivery_detail(delivery_status: DeliveryStatus) -> &'static str {
+    match delivery_status {
+        DeliveryStatus::DeliveredToAssignee => "исполнитель уже получил задачу в Telegram",
+        DeliveryStatus::PendingDelivery => {
+            "уведомление уже в очереди, бот доставит его автоматически"
+        }
+        DeliveryStatus::PendingAssigneeRegistration => {
+            "исполнитель ещё не запускал бота; задача сохранена и придёт после /start"
+        }
+        DeliveryStatus::RetryPending => "прошлая отправка не удалась, бот повторит попытку",
+        DeliveryStatus::Failed => {
+            "доставить уведомление пока не получилось, нужно проверить подключение исполнителя"
+        }
+        DeliveryStatus::CreatorOnly => "задача создана без отдельного уведомления исполнителю",
+    }
+}
+
 pub(crate) fn truncate_title(value: &str) -> String {
     let truncated = value
         .chars()

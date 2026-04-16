@@ -1,29 +1,26 @@
 use crate::application::dto::task_views::{TaskCreationOutcome, TaskListPage};
 use crate::presentation::telegram::callbacks::TaskListOrigin;
 
-use super::super::ui_shared::{delivery_badge, status_badge, status_label, INFO_EMOJI, TIME_EMOJI};
+use super::super::ui_shared::{
+    delivery_badge, delivery_detail, status_badge, status_label, INFO_EMOJI, TIME_EMOJI,
+};
 
 pub fn task_creation_text(outcome: &TaskCreationOutcome) -> String {
     match outcome {
         TaskCreationOutcome::Created(summary) => format!(
-            "✅ Задача создана\n\nКод: {}\nСтатус: {}\nДоставка: {}\n\n{}\n\nОткройте карточку, чтобы продолжить работу.",
+            "✅ Задача создана\n\nКод: {}\nСтатус: {} {}\nДоставка: {} — {}\n\n{}\n\nОткройте карточку, чтобы продолжить работу.",
             summary.public_code,
-            format!(
-                "{} {}",
-                status_badge(summary.task.status),
-                status_label(summary.task.status)
-            ),
+            status_badge(summary.task.status),
+            status_label(summary.task.status),
             delivery_badge(summary.delivery_status),
+            delivery_detail(summary.delivery_status),
             summary.task.title
         ),
         TaskCreationOutcome::DuplicateFound(summary) => format!(
-            "{INFO_EMOJI} Такая задача уже есть\n\nКод: {}\nСтатус: {}\n\nЯ не создавал дубль. Откройте текущую карточку и продолжайте работу из неё.",
+            "{INFO_EMOJI} Такая задача уже есть\n\nКод: {}\nСтатус: {} {}\n\nЯ не создавал дубль. Откройте текущую карточку и продолжайте работу из неё.",
             summary.public_code,
-            format!(
-                "{} {}",
-                status_badge(summary.task.status),
-                status_label(summary.task.status)
-            ),
+            status_badge(summary.task.status),
+            status_label(summary.task.status),
         ),
         TaskCreationOutcome::ClarificationRequired(request) => {
             let candidates = if request.candidates.is_empty() {
@@ -38,7 +35,10 @@ pub fn task_creation_text(outcome: &TaskCreationOutcome) -> String {
                             .as_ref()
                             .map(|value| format!(" (@{value})"))
                             .unwrap_or_default();
-                        format!("• {}{} — {}%", candidate.full_name, username, candidate.confidence)
+                        format!(
+                            "• {}{} — {}%",
+                            candidate.full_name, username, candidate.confidence
+                        )
                     })
                     .collect::<Vec<_>>()
                     .join("\n")
@@ -106,7 +106,7 @@ pub fn list_text(title: &str, subtitle: &str, page: &TaskListPage) -> String {
                 .unwrap_or_default();
 
             lines.push(format!(
-                "• {} {} {} \n   {}{}{}{}",
+                "• {} {} {}\n   {}{}{}{}",
                 task.public_code,
                 status_badge(task.status),
                 task.title,

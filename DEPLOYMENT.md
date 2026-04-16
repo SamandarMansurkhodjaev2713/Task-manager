@@ -41,16 +41,15 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo run
 ```
 
-## Current local environment caveat
+## Current local verification note
 
 In the current Windows workspace:
 - `cargo fmt --check` works
-- local `cargo check` is blocked because the installed Rust target is `x86_64-pc-windows-gnu`
-- Windows policy blocks `gcc.exe`, which is needed by transitive native build steps
+- `cargo check` works
+- `cargo clippy --all-targets --all-features -- -D warnings` works
+- targeted `cargo test` runs work
 
-Recommended fixes:
-- switch to an MSVC Rust toolchain for local verification, or
-- validate build and tests through Docker
+For deployment sign-off, keep Docker-based validation as the last gate to remove host-specific variance.
 
 ## Docker
 
@@ -58,13 +57,22 @@ Primary commands:
 
 ```powershell
 docker compose up telegram-task-bot
-docker compose run --rm tests
+docker compose --profile test run --rm tests
+docker compose --profile smoke run --rm smoke-check
 ```
 
 Current Docker setup uses:
-- low parallel build settings
+- multi-stage build
+- dedicated runtime image
+- dedicated test-runner image stage
+- non-root app execution through `gosu`
+- healthcheck on `/healthz`
 - a named volume for SQLite persistence
 - explicit `DATABASE_URL` override inside the container
+- read-only runtime filesystem outside writable mounts
+- dedicated `/tmp` tmpfs for transient runtime files
+- graceful stop window through `stop_grace_period`
+- isolated test profile with dummy secrets instead of the live `.env`
 
 ## Migration strategy
 
@@ -76,8 +84,11 @@ Current Docker setup uses:
 
 - create task from quick mode
 - create task from guided mode
+- create task from voice mode and verify confirmation appears before creation
 - assign task to a user who already started the bot
 - assign task to a directory employee who has not started the bot
+- verify that the same employee receives linked tasks automatically after their first `/start`
+- verify that the pending-registration card shows the dedicated help screen
 - verify comment / blocker / review / reassignment flows
 - verify overdue and reminder jobs
 - verify queue retry behavior
@@ -87,4 +98,5 @@ Current Docker setup uses:
 - [README.md](./README.md)
 - [ARCHITECTURE.md](./ARCHITECTURE.md)
 - [docs/memory.md](./docs/memory.md)
+- [docs/operations.md](./docs/operations.md)
 - [docs/quality-roadmap.md](./docs/quality-roadmap.md)

@@ -41,7 +41,7 @@ pub fn match_employee_name(query: &str, employees: &[Employee]) -> EmployeeMatch
         employees,
         &normalized_query,
         MatchStrategy::FirstNameFuzzy,
-        |employee| first_name(employee),
+        first_name,
     );
     if let Some(outcome) = resolve_matches(first_name_matches) {
         return outcome;

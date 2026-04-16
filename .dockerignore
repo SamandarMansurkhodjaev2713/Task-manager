@@ -1,3 +1,5 @@
 /target
 .git
 .env
+data
+.claude

@@ -1,22 +1,88 @@
-use teloxide::payloads::{AnswerCallbackQuerySetters, SendMessageSetters};
+use teloxide::payloads::{AnswerCallbackQuerySetters, EditMessageTextSetters, SendMessageSetters};
 use teloxide::prelude::{CallbackQuery, Message, Requester};
-use teloxide::types::{ChatId, InlineKeyboardMarkup};
+use teloxide::types::{ChatId, InlineKeyboardMarkup, MessageId};
 use teloxide::Bot;
 
 use crate::domain::errors::AppError;
 use crate::domain::message::{IncomingMessage, MessageContent, VoiceAttachment};
+use crate::presentation::telegram::active_screens::{ActiveScreenState, ScreenDescriptor};
 
-use super::RATE_LIMIT_MESSAGE;
+use super::{TelegramRuntime, RATE_LIMIT_MESSAGE};
 
 pub(crate) async fn send_screen(
     bot: &Bot,
+    state: &TelegramRuntime,
     chat_id: ChatId,
+    descriptor: ScreenDescriptor,
     text: &str,
     keyboard: InlineKeyboardMarkup,
 ) -> Result<(), teloxide::RequestError> {
-    bot.send_message(chat_id, text.to_owned())
+    if let Some(active_screen) = state.active_screens.get(chat_id.0).await {
+        match try_edit_screen(
+            bot,
+            chat_id,
+            active_screen.message_id,
+            text,
+            keyboard.clone(),
+        )
+        .await?
+        {
+            ScreenRenderResult::Edited | ScreenRenderResult::NoChange => {
+                state
+                    .active_screens
+                    .set(
+                        chat_id.0,
+                        ActiveScreenState {
+                            message_id: active_screen.message_id,
+                            descriptor,
+                        },
+                    )
+                    .await;
+                return Ok(());
+            }
+            ScreenRenderResult::FallbackRequired => {}
+        }
+    }
+
+    let sent_message = bot
+        .send_message(chat_id, text.to_owned())
         .reply_markup(keyboard)
         .await?;
+    state
+        .active_screens
+        .set(
+            chat_id.0,
+            ActiveScreenState {
+                message_id: sent_message.id.0,
+                descriptor,
+            },
+        )
+        .await;
+    Ok(())
+}
+
+pub(crate) async fn send_fresh_screen(
+    bot: &Bot,
+    state: &TelegramRuntime,
+    chat_id: ChatId,
+    descriptor: ScreenDescriptor,
+    text: &str,
+    keyboard: InlineKeyboardMarkup,
+) -> Result<(), teloxide::RequestError> {
+    let sent_message = bot
+        .send_message(chat_id, text.to_owned())
+        .reply_markup(keyboard)
+        .await?;
+    state
+        .active_screens
+        .set(
+            chat_id.0,
+            ActiveScreenState {
+                message_id: sent_message.id.0,
+                descriptor,
+            },
+        )
+        .await;
     Ok(())
 }
 
@@ -69,7 +135,7 @@ pub(crate) fn to_incoming_message(message: &Message) -> Option<IncomingMessage> 
             voice: VoiceAttachment {
                 file_id: voice.file.id.to_string(),
                 file_unique_id: voice.file.unique_id.to_string(),
-                duration_seconds: voice.duration.seconds() as u32,
+                duration_seconds: voice.duration.seconds(),
                 mime_type: voice.mime_type.clone().map(|value| value.to_string()),
                 file_size_bytes: match voice.file.size {
                     u32::MAX => None,
@@ -111,4 +177,45 @@ pub(crate) fn callback_to_incoming_message(
         timestamp: chrono::Utc::now(),
         source_message_key_override: None,
     })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScreenRenderResult {
+    Edited,
+    NoChange,
+    FallbackRequired,
+}
+
+async fn try_edit_screen(
+    bot: &Bot,
+    chat_id: ChatId,
+    message_id: i32,
+    text: &str,
+    keyboard: InlineKeyboardMarkup,
+) -> Result<ScreenRenderResult, teloxide::RequestError> {
+    let request = bot
+        .edit_message_text(chat_id, MessageId(message_id), text.to_owned())
+        .reply_markup(keyboard);
+
+    match request.await {
+        Ok(_) => Ok(ScreenRenderResult::Edited),
+        Err(error) if is_message_not_modified_error(&error) => Ok(ScreenRenderResult::NoChange),
+        Err(error) if is_edit_fallback_error(&error) => Ok(ScreenRenderResult::FallbackRequired),
+        Err(error) => Err(error),
+    }
+}
+
+fn is_message_not_modified_error(error: &teloxide::RequestError) -> bool {
+    error
+        .to_string()
+        .to_ascii_lowercase()
+        .contains("message is not modified")
+}
+
+fn is_edit_fallback_error(error: &teloxide::RequestError) -> bool {
+    let text = error.to_string().to_ascii_lowercase();
+    text.contains("message to edit not found")
+        || text.contains("message can't be edited")
+        || text.contains("message can not be edited")
+        || text.contains("there is no text in the message to edit")
 }
