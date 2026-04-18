@@ -12,6 +12,10 @@ use crate::presentation::telegram::interactions::TaskInteractionKind;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScreenDescriptor {
     Unknown,
+    /// Transient screen shown while a slow async operation (e.g. voice transcription) is running.
+    /// Always replaced by the next real screen — never displayed with interactive buttons.
+    Processing,
+    RegistrationLinking,
     MainMenu,
     Help,
     Settings,

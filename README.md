@@ -8,7 +8,8 @@ Production-oriented Telegram bot for task intake, assignment, review, blockers, 
 - Telegram text and voice intake
 - Quick task creation and guided 3-step wizard
 - Voice task creation with mandatory confirmation before the task is created
-- Assignee resolution by `@username` or employee directory with ambiguity handling
+- Strict assignee resolution by `@username` or employee directory with no silent auto-assignment on fuzzy full-name matches
+- Explicit registration linking between Telegram users and employees with safe ambiguity handling
 - SQLite persistence with migrations, optimistic locking, audit log, comments, and notifications queue
 - Separate task business state and notification delivery state
 - Background jobs for employee sync, notification delivery, deadline reminders, overdue alerts, and daily summaries
@@ -29,6 +30,7 @@ Production-oriented Telegram bot for task intake, assignment, review, blockers, 
 - Task cards support status changes, review flow, blockers, comments, and reassignment
 - Dangerous actions such as cancel require explicit confirmation
 - If the assignee is found but has not started the bot, the task is still created and the card shows that delivery is waiting for `/start`
+- If a name is ambiguous or misspelled, the bot pauses creation and asks the author to choose the exact person explicitly
 - The task card explains what to do when the assignee has not started the bot yet and offers a dedicated help screen for that case
 - If the assignee starts the bot later, open employee-assigned tasks are linked automatically and assignment delivery is backfilled safely
 - Duplicate detection opens the existing task instead of pretending a new one was created
@@ -116,6 +118,7 @@ In this Windows workspace:
 - `cargo fmt --all` passes
 - `cargo check` passes
 - `cargo clippy --all-targets --all-features -- -D warnings` passes
-- targeted `cargo test` execution passes
+- `cargo test --no-run` passes
+- local `cargo test` is partially blocked by a Windows application-control policy on one test binary, so container verification remains part of the final confidence path
 
 For final deploy confidence, keep Docker-based validation in the loop because it removes host-specific Windows variance from the verification path.

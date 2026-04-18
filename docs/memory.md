@@ -246,6 +246,40 @@ Why:
 - `waiting for /start` is technically correct but operationally incomplete
 - the author needs one obvious next step, not only a status label
 
+### 17. Assignee matching now prefers safety over convenience
+
+Chosen:
+- exact `@username` may auto-resolve
+- exact full name may auto-resolve
+- exact first name resolves only when it is unique
+- typo-like or fuzzy full-name matches never auto-assign silently
+- ambiguous names always go through explicit button-based choice
+
+Rejected:
+- silently assigning on the best fuzzy candidate
+- treating a close full-name suggestion as safe enough
+
+Why:
+- the cost of a wrong assignee is higher than the cost of one extra clarification step
+- small-team trust depends on the bot never sending work to the wrong person
+
+### 18. Registration now has an explicit employee-linking model
+
+Chosen:
+- users can be stored unlinked
+- once linked, `users.linked_employee_id` becomes the durable identity bridge
+- `/start` may reopen linking clarification for still-unlinked users
+- ambiguous employee linking is explicit and button-driven
+- continuing without linking is allowed, but it is a deliberate choice
+
+Rejected:
+- implicit “probably this employee” auto-linking
+- relying forever on display-name coincidence without a durable link
+
+Why:
+- registration must be safe, short, and reversible
+- late assignment recovery needs a real employee link, not a lucky name match
+
 Chosen:
 - multi-stage Docker build
 - dedicated runtime image
@@ -374,3 +408,76 @@ Why rejected:
 - increases secret exposure risk
 - makes CI and local test runs more fragile
 - hides the difference between runtime config and test-only requirements
+
+## 19. Production remediation pass — confirmed findings and fixes applied (2026-04-18)
+
+A full production review was conducted against the codebase and resulted in a remediation
+pass that addressed all confirmed Critical and High issues plus material Medium issues.
+
+**Confirmed Critical — fixed:**
+
+- **C-1** (`Dockerfile`): test-runner stage now runs `cargo test --lib --workspace` during
+  `docker build`. `CARGO_BUILD_JOBS=1` removed from both stages (also fixes OPS-8).
+- **C-2** (`migrations/005_employees_remove_full_name_unique.sql`,
+  `employee_repository.rs`): removed `UNIQUE` on `employees.full_name`; replaced
+  `ON CONFLICT(full_name)` upsert with a two-path strategy: match by
+  `telegram_username` (with a partial unique index) when present, otherwise find-and-update
+  or insert for no-username rows. Same-name employees with different Telegram accounts
+  no longer clobber each other.
+- **C-3** (`dispatcher_transport.rs`): `send_error()` no longer leaks internal English
+  dev messages to end users. All variants now produce Russian user-facing strings. A
+  `tracing::warn!` logs the internal code + message for ops.
+
+**Confirmed High — fixed:**
+
+- **H-1 + M-22** (`dispatcher_transport.rs`): `is_edit_fallback_error` and
+  `is_message_not_modified_error` now match against `teloxide::RequestError::Api` only;
+  network / IO errors are explicitly excluded from these patterns.
+- **H-3** (`pool.rs`): SQLite WAL mode enabled (`journal_mode = WAL`,
+  `synchronous = NORMAL`). Concurrent readers no longer block writers.
+- **H-4** (`process_notifications.rs`): notification delivery is now concurrent
+  (up to `MAX_CONCURRENT_NOTIFICATION_DELIVERIES = 5` in flight at once) via
+  `tokio::task::JoinSet` + `Semaphore`. Batch errors are collected rather than
+  short-circuiting.
+- **H-6** (`DEPLOYMENT.md`): concrete snapshot-based rollback procedure with shell
+  scripts documented.
+- **H-10** (`bot_gateway.rs`, `process_notifications.rs`): `TeloxideNotifier` now emits
+  `TELEGRAM_BOT_BLOCKED` / `TELEGRAM_CHAT_NOT_FOUND` for permanent delivery failures.
+  `ProcessNotificationsUseCase` checks these codes and calls `mark_failed` immediately
+  instead of exhausting retry attempts.
+
+**Confirmed Medium — fixed:**
+
+- **M-1** (`role_authorization.rs`): removed redundant `|| is_admin` from the Cancel
+  action check (covered by `can_manage` which already includes admins).
+- **M-7** (`dispatcher_assignee_clarifications.rs`): `clarification_candidate_ids` is now
+  the single canonical copy (`pub(crate)`); removed duplicates from `dispatcher_guided.rs`
+  and `dispatcher_voice.rs`.
+- **M-23** (`process_notifications.rs`, `reliability.rs`): exponential back-off for
+  notification retries (`base 60 s × 2^(attempt-1)`, capped at 3600 s) replacing the
+  previous fixed 60 s delay.
+
+**Confirmed Medium — not applied (design decision):**
+
+- **M-4** (`GuidedTaskDraft.submission_key`): reverted — the field IS read by
+  `build_guided_message` to create the deduplication `source_message_key` for guided
+  submissions. Finding was a false positive.
+
+**Confirmed Outdated:**
+
+- **OPS-4 (healthcheck)**: `/healthz` was already implemented in `src/presentation/http/mod.rs`.
+
+**New integration tests added:**
+
+- `tests/employee_repository_integration.rs` — 4 tests covering same-name upsert,
+  username-based upsert idempotency, and no-username upsert idempotency.
+- `tests/notification_processing_tests.rs` — 3 tests covering permanent failure
+  fast-path (bot blocked), transient retry scheduling, and last-attempt permanent fail.
+
+**Known remaining risks (deferred):**
+
+- H-2 / H-8: `count_stats_global` is an unbounded full-table scan (no caching).
+  Acceptable for ≤ 40 users; add a 30-second in-memory TTL cache before scaling.
+- Circuit-breaker state is in-process; resets on restart. Non-critical for single-instance.
+- SQLite WAL journal file is not explicitly checkpointed; may grow under high write load.
+  Monitor `wal_autocheckpoint` pragma if needed.

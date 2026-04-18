@@ -48,3 +48,28 @@ fn given_username_when_match_then_returns_unique_match_by_username() {
         _ => panic!("expected unique username match"),
     }
 }
+
+#[test]
+fn given_full_name_with_typo_when_match_then_does_not_auto_assign_unique_employee() {
+    let employees = vec![
+        factories::employee("Иван Петров", Some("ivan_petrov")),
+        factories::employee("Илья Сидоров", Some("ilya_sidorov")),
+    ];
+
+    let outcome = match_employee_name("Иван Петро", &employees);
+
+    assert!(!matches!(outcome, EmployeeMatchOutcome::Unique(_)));
+}
+
+#[test]
+fn given_single_first_name_with_multiple_people_when_match_then_requires_explicit_choice() {
+    let employees = vec![
+        factories::employee("Мария Иванова", Some("maria_ivanova")),
+        factories::employee("Мария Петрова", Some("maria_petrova")),
+        factories::employee("Павел Смирнов", Some("pavel_smirnov")),
+    ];
+
+    let outcome = match_employee_name("Мария", &employees);
+
+    assert!(matches!(outcome, EmployeeMatchOutcome::Ambiguous(_)));
+}

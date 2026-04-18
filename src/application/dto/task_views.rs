@@ -16,6 +16,23 @@ pub enum TaskCreationOutcome {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct TaskInterpretationPreview {
+    pub description: String,
+    pub deadline_label: Option<String>,
+    pub assignee: AssigneeInterpretation,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub enum AssigneeInterpretation {
+    None,
+    Resolved {
+        display: String,
+        delivery_status: DeliveryStatus,
+    },
+    ClarificationRequired(ClarificationRequest),
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct TaskCreationSummary {
     pub task_uid: Uuid,
     pub public_code: String,
@@ -27,6 +44,8 @@ pub struct TaskCreationSummary {
 #[derive(Debug, Clone, Serialize)]
 pub struct ClarificationRequest {
     pub message: String,
+    pub requested_query: Option<String>,
+    pub allow_unassigned: bool,
     pub candidates: Vec<EmployeeCandidateView>,
 }
 

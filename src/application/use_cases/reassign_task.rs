@@ -4,6 +4,7 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::application::dto::task_views::{ClarificationRequest, TaskStatusSummary};
+use crate::application::policies::role_authorization::RoleAuthorizationPolicy;
 use crate::application::ports::repositories::{
     AuditLogRepository, NotificationRepository, TaskRepository,
 };
@@ -20,6 +21,12 @@ use crate::shared::task_codes::format_public_task_code_or_placeholder;
 pub enum ReassignTaskOutcome {
     Reassigned(TaskStatusSummary),
     ClarificationRequired(ClarificationRequest),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReassignAssigneeDecision {
+    Auto,
+    EmployeeId(i64),
 }
 
 pub struct ReassignTaskUseCase {
@@ -53,6 +60,22 @@ impl ReassignTaskUseCase {
         task_uid: Uuid,
         assignee_query: &str,
     ) -> AppResult<ReassignTaskOutcome> {
+        self.execute_with_decision(
+            actor,
+            task_uid,
+            assignee_query,
+            ReassignAssigneeDecision::Auto,
+        )
+        .await
+    }
+
+    pub async fn execute_with_decision(
+        &self,
+        actor: &User,
+        task_uid: Uuid,
+        assignee_query: &str,
+        assignee_decision: ReassignAssigneeDecision,
+    ) -> AppResult<ReassignTaskOutcome> {
         let Some(actor_id) = actor.id else {
             return Err(AppError::unauthenticated(
                 "User must be registered before reassigning tasks",
@@ -66,9 +89,22 @@ impl ReassignTaskUseCase {
                 json!({ "task_uid": task_uid }),
             ));
         };
-        authorize_reassign(actor, &task)?;
+        RoleAuthorizationPolicy::ensure_can_reassign(actor, &task)?;
 
-        let resolution = self.assignee_resolver.resolve(assignee_query).await?;
+        let resolution = match assignee_decision {
+            ReassignAssigneeDecision::Auto => {
+                self.assignee_resolver
+                    .resolve_for_reassignment(assignee_query)
+                    .await?
+            }
+            ReassignAssigneeDecision::EmployeeId(employee_id) => {
+                AssigneeResolution::Resolved(Box::new(
+                    self.assignee_resolver
+                        .resolve_employee_id(employee_id)
+                        .await?,
+                ))
+            }
+        };
         let (user, employee) = match resolution {
             AssigneeResolution::Resolved(resolved) => {
                 let ResolvedAssignee { user, employee } = *resolved;
@@ -158,28 +194,4 @@ impl ReassignTaskUseCase {
         let _ = self.notification_repository.enqueue(&notification).await?;
         Ok(())
     }
-}
-
-fn authorize_reassign(actor: &User, task: &crate::domain::task::Task) -> AppResult<()> {
-    let Some(actor_id) = actor.id else {
-        return Err(AppError::unauthenticated(
-            "User must be registered before reassigning tasks",
-            json!({ "telegram_id": actor.telegram_id }),
-        ));
-    };
-
-    let can_reassign = actor.role.is_manager_or_admin()
-        || task.created_by_user_id == actor_id
-        || task.assigned_to_user_id == Some(actor_id);
-    if can_reassign {
-        return Ok(());
-    }
-
-    Err(AppError::unauthorized(
-        "Only the creator, assignee, manager, or admin can reassign a task",
-        json!({
-            "actor_user_id": actor_id,
-            "task_uid": task.task_uid,
-        }),
-    ))
 }

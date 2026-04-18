@@ -137,6 +137,31 @@ fn callback_button(text: &str, payload: String) -> InlineKeyboardButton {
 }
 
 fn telegram_error(error: teloxide::RequestError) -> AppError {
+    // Classify permanent delivery failures so the notification pipeline can skip
+    // retries and mark them failed immediately rather than exhausting retry attempts.
+    if let teloxide::RequestError::Api(ref api_err) = error {
+        let text = api_err.to_string().to_ascii_lowercase();
+        if text.contains("bot was blocked by the user")
+            || text.contains("user is deactivated")
+            || text.contains("bot is not a member")
+        {
+            return AppError::network(
+                "TELEGRAM_BOT_BLOCKED",
+                "Bot was blocked by the user or user is deactivated",
+                serde_json::json!({ "error": error.to_string() }),
+            );
+        }
+        if text.contains("chat not found")
+            || text.contains("group chat was upgraded")
+            || text.contains("supergroup chat was upgraded")
+        {
+            return AppError::network(
+                "TELEGRAM_CHAT_NOT_FOUND",
+                "Telegram chat not found",
+                serde_json::json!({ "error": error.to_string() }),
+            );
+        }
+    }
     AppError::network(
         "TELEGRAM_REQUEST_FAILED",
         "Telegram API request failed",

@@ -82,6 +82,18 @@ pub fn encode_callback(callback: &TelegramCallback) -> String {
         TelegramCallback::VoiceCreateEdit => format!("{CALLBACK_GROUP_CREATE}:voice_edit"),
         TelegramCallback::VoiceCreateBack => format!("{CALLBACK_GROUP_CREATE}:voice_back"),
         TelegramCallback::VoiceCreateCancel => format!("{CALLBACK_GROUP_CREATE}:voice_cancel"),
+        TelegramCallback::RegistrationPickEmployee { employee_id } => {
+            format!("{CALLBACK_GROUP_CREATE}:register_employee:{employee_id}")
+        }
+        TelegramCallback::RegistrationContinueUnlinked => {
+            format!("{CALLBACK_GROUP_CREATE}:register_unlinked")
+        }
+        TelegramCallback::ClarificationPickEmployee { employee_id } => {
+            format!("{CALLBACK_GROUP_CREATE}:clarify_employee:{employee_id}")
+        }
+        TelegramCallback::ClarificationCreateUnassigned => {
+            format!("{CALLBACK_GROUP_CREATE}:clarify_unassigned")
+        }
         TelegramCallback::DraftSkipAssignee => format!("{CALLBACK_GROUP_DRAFT}:skip_assignee"),
         TelegramCallback::DraftSkipDeadline => format!("{CALLBACK_GROUP_DRAFT}:skip_deadline"),
         TelegramCallback::DraftSubmit => format!("{CALLBACK_GROUP_DRAFT}:submit"),
@@ -168,6 +180,22 @@ fn parse_callback_modern(value: &str) -> Option<TelegramCallback> {
         [CALLBACK_GROUP_CREATE, "voice_edit"] => Some(TelegramCallback::VoiceCreateEdit),
         [CALLBACK_GROUP_CREATE, "voice_back"] => Some(TelegramCallback::VoiceCreateBack),
         [CALLBACK_GROUP_CREATE, "voice_cancel"] => Some(TelegramCallback::VoiceCreateCancel),
+        [CALLBACK_GROUP_CREATE, "register_employee", employee_id] => {
+            Some(TelegramCallback::RegistrationPickEmployee {
+                employee_id: employee_id.parse::<i64>().ok()?,
+            })
+        }
+        [CALLBACK_GROUP_CREATE, "register_unlinked"] => {
+            Some(TelegramCallback::RegistrationContinueUnlinked)
+        }
+        [CALLBACK_GROUP_CREATE, "clarify_employee", employee_id] => {
+            Some(TelegramCallback::ClarificationPickEmployee {
+                employee_id: employee_id.parse::<i64>().ok()?,
+            })
+        }
+        [CALLBACK_GROUP_CREATE, "clarify_unassigned"] => {
+            Some(TelegramCallback::ClarificationCreateUnassigned)
+        }
         [CALLBACK_GROUP_DRAFT, "skip_assignee"] => Some(TelegramCallback::DraftSkipAssignee),
         [CALLBACK_GROUP_DRAFT, "skip_deadline"] => Some(TelegramCallback::DraftSkipDeadline),
         [CALLBACK_GROUP_DRAFT, "submit"] => Some(TelegramCallback::DraftSubmit),
@@ -361,6 +389,26 @@ mod tests {
             task_uid,
             origin: TaskListOrigin::Created,
         };
+
+        let encoded = encode_callback(&callback);
+        let parsed = parse_callback(&encoded);
+
+        assert_eq!(parsed, Some(callback));
+    }
+
+    #[test]
+    fn given_clarification_employee_callback_when_roundtrip_then_it_parses_back() {
+        let callback = TelegramCallback::ClarificationPickEmployee { employee_id: 42 };
+
+        let encoded = encode_callback(&callback);
+        let parsed = parse_callback(&encoded);
+
+        assert_eq!(parsed, Some(callback));
+    }
+
+    #[test]
+    fn given_registration_employee_callback_when_roundtrip_then_it_parses_back() {
+        let callback = TelegramCallback::RegistrationPickEmployee { employee_id: 5 };
 
         let encoded = encode_callback(&callback);
         let parsed = parse_callback(&encoded);

@@ -102,15 +102,29 @@ pub(crate) async fn send_error(
     chat_id: i64,
     error: AppError,
 ) -> Result<(), teloxide::RequestError> {
+    // Log every application error so ops can trace root causes without exposing
+    // internal details to the end user.
+    tracing::warn!(
+        code = error.code(),
+        message = error.message(),
+        "application error presented to user"
+    );
+
     let message = match &error {
-        AppError::NotFound { .. } => format!("Не найдено: {}", error.message()),
+        AppError::NotFound { .. } => {
+            "Не удалось найти запрошенный объект. Возможно, он был удалён или изменился.".to_owned()
+        }
         AppError::Auth { code, .. } if *code == "UNAUTHORIZED" => {
             "Недостаточно прав для выполнения этого действия.".to_owned()
         }
         AppError::Auth { .. } => "Сначала выполните /start, чтобы зарегистрировать чат.".to_owned(),
-        AppError::Validation { .. } => format!("Некорректный запрос: {}", error.message()),
+        AppError::Validation { .. } => {
+            "Некорректный запрос. Проверьте данные и попробуйте снова.".to_owned()
+        }
         AppError::RateLimit { .. } => RATE_LIMIT_MESSAGE.to_owned(),
-        AppError::Conflict { .. } => format!("Конфликт: {}", error.message()),
+        AppError::Conflict { .. } => {
+            "Данные уже изменились. Попробуйте обновить страницу и повторить действие.".to_owned()
+        }
         _ => "Произошла ошибка. Попробуйте повторить позже.".to_owned(),
     };
 
@@ -156,6 +170,7 @@ pub(crate) fn to_incoming_message(message: &Message) -> Option<IncomingMessage> 
         content,
         timestamp: chrono::Utc::now(),
         source_message_key_override: None,
+        is_voice_origin: false,
     })
 }
 
@@ -176,6 +191,7 @@ pub(crate) fn callback_to_incoming_message(
         },
         timestamp: chrono::Utc::now(),
         source_message_key_override: None,
+        is_voice_origin: false,
     })
 }
 
@@ -206,14 +222,22 @@ async fn try_edit_screen(
 }
 
 fn is_message_not_modified_error(error: &teloxide::RequestError) -> bool {
-    error
+    // Only treat Telegram API errors as "not modified"; network / IO errors should propagate.
+    let teloxide::RequestError::Api(api_error) = error else {
+        return false;
+    };
+    api_error
         .to_string()
         .to_ascii_lowercase()
         .contains("message is not modified")
 }
 
 fn is_edit_fallback_error(error: &teloxide::RequestError) -> bool {
-    let text = error.to_string().to_ascii_lowercase();
+    // Only treat Telegram API errors as edit-fallback triggers; anything else should propagate.
+    let teloxide::RequestError::Api(api_error) = error else {
+        return false;
+    };
+    let text = api_error.to_string().to_ascii_lowercase();
     text.contains("message to edit not found")
         || text.contains("message can't be edited")
         || text.contains("message can not be edited")

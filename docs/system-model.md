@@ -34,9 +34,18 @@ Expected outcomes:
 Voice creation is a guarded flow:
 1. receive voice
 2. transcribe
-3. show confirmation screen
+3. show interpretation screen with description, assignee, deadline, and clarification risk
 4. allow confirm, edit, or cancel
 5. create only after explicit confirmation
+
+### Registration and employee linking
+
+Registration is separate from employee linking, but the bot tries to connect them safely:
+- exact username match may auto-link
+- exact unique full-name match may auto-link
+- ambiguous candidates require explicit choice
+- users may continue unlinked deliberately
+- once linked, pending employee-assigned tasks are recovered automatically
 
 ### Guided create
 
@@ -200,12 +209,16 @@ Row-level authorization is enforced in application policies, not only at Telegra
 Resolution order:
 1. exact Telegram username match
 2. exact employee directory match
-3. fuzzy employee matching
-4. ambiguity flow
+3. exact first name only when unique
+4. explicit ambiguity flow for all non-safe cases
 
 If multiple candidates match:
 - return clarification
-- show likely candidates
+- show likely candidates as explicit buttons
+
+If a full name is misspelled or fuzzy:
+- do not auto-assign
+- require clarification or a deliberate unassigned decision
 
 If the assignee exists in directory but has never started the bot:
 - create the task
@@ -231,6 +244,8 @@ If the assignee exists in directory but has never started the bot:
 - audit history records meaningful changes only
 - navigation flows should not spam the chat
 - voice intake never creates a task before explicit confirmation
+- registration never auto-links on low-confidence identity matching
+- unresolved employee ambiguity never silently creates a wrong assignment
 
 ## Priority roadmap
 

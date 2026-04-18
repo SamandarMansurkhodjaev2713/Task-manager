@@ -3,11 +3,17 @@ use teloxide::types::ChatId;
 use teloxide::Bot;
 
 use crate::application::use_cases::collect_stats::StatsScope;
+use crate::application::use_cases::register_user::RegistrationLinkPreview;
 use crate::domain::message::{IncomingMessage, MessageContent};
 use crate::domain::user::User;
+use crate::presentation::telegram::active_screens::ScreenDescriptor;
 use crate::presentation::telegram::callbacks::TelegramCallback;
 use crate::presentation::telegram::commands::BotCommand;
+use crate::presentation::telegram::ui;
 
+use super::dispatcher_assignee_clarifications::{
+    choose_clarified_assignee, create_without_assignee_after_clarification,
+};
 use super::dispatcher_guided::{
     create_task_and_present, edit_guided_field, skip_guided_assignee, skip_guided_deadline,
     start_guided_create, start_quick_create, submit_guided_draft, SessionCompletion,
@@ -23,11 +29,8 @@ use super::dispatcher_task_views::{
     confirm_task_cancel, execute_cancel_from_command, show_delivery_help, show_task_details,
     show_task_from_command, update_task_status,
 };
-use super::dispatcher_transport::send_error;
-use super::dispatcher_voice::{
-    cancel_voice_create, return_to_voice_confirmation, start_voice_transcript_edit,
-    submit_voice_draft,
-};
+use super::dispatcher_transport::{send_error, send_fresh_screen};
+use super::dispatcher_voice::VoiceCreateCoordinator;
 use super::TelegramRuntime;
 use super::RATE_LIMIT_MESSAGE;
 
@@ -38,8 +41,49 @@ pub(crate) async fn register_actor(
     state: &TelegramRuntime,
     incoming_message: &IncomingMessage,
 ) -> Result<Option<User>, teloxide::RequestError> {
-    match state.register_user_use_case.execute(incoming_message).await {
-        Ok(actor) => Ok(Some(actor)),
+    match state
+        .register_user_use_case
+        .preview_linking(incoming_message)
+        .await
+    {
+        Ok(RegistrationLinkPreview::Ready(decision)) => match state
+            .register_user_use_case
+            .execute_with_link_decision(incoming_message, decision)
+            .await
+        {
+            Ok(actor) => Ok(Some(actor)),
+            Err(error) => {
+                send_error(bot, incoming_message.chat_id, error).await?;
+                Ok(None)
+            }
+        },
+        Ok(RegistrationLinkPreview::ClarificationRequired(clarification)) => {
+            state
+                .registration_links
+                .set(
+                    incoming_message.chat_id,
+                    clarification
+                        .candidates
+                        .iter()
+                        .filter_map(|candidate| candidate.employee_id)
+                        .collect(),
+                    clarification.allow_continue_unlinked,
+                )
+                .await;
+            send_fresh_screen(
+                bot,
+                state,
+                ChatId(incoming_message.chat_id),
+                ScreenDescriptor::RegistrationLinking,
+                &ui::registration_link_text(&clarification.message, &clarification.candidates),
+                ui::registration_link_keyboard(
+                    &clarification.candidates,
+                    clarification.allow_continue_unlinked,
+                ),
+            )
+            .await?;
+            Ok(None)
+        }
         Err(error) => {
             send_error(bot, incoming_message.chat_id, error).await?;
             Ok(None)
@@ -53,7 +97,9 @@ pub(crate) async fn check_rate_limit(
     actor: &User,
     chat_id: ChatId,
 ) -> Result<bool, teloxide::RequestError> {
-    let actor_key = u64::try_from(actor.telegram_id).unwrap_or_default();
+    // Telegram user IDs are always non-negative; bit-cast is safe and avoids
+    // the unwrap_or_default() footgun that would bucket all negative IDs into key=0.
+    let actor_key = actor.telegram_id as u64;
     if state.rate_limiter.check(actor_key) {
         return Ok(true);
     }
@@ -191,13 +237,33 @@ pub(crate) async fn handle_callback_action(
         TelegramCallback::StartQuickCreate => start_quick_create(bot, state, chat_id).await,
         TelegramCallback::StartGuidedCreate => start_guided_create(bot, state, chat_id).await,
         TelegramCallback::VoiceCreateConfirm => {
-            submit_voice_draft(bot, state, &actor, chat_id).await
+            VoiceCreateCoordinator::new(bot, state)
+                .submit(&actor, chat_id)
+                .await
         }
-        TelegramCallback::VoiceCreateEdit => start_voice_transcript_edit(bot, state, chat_id).await,
+        TelegramCallback::VoiceCreateEdit => {
+            VoiceCreateCoordinator::new(bot, state)
+                .start_edit(chat_id)
+                .await
+        }
         TelegramCallback::VoiceCreateBack => {
-            return_to_voice_confirmation(bot, state, chat_id).await
+            VoiceCreateCoordinator::new(bot, state)
+                .return_to_confirmation(&actor, chat_id)
+                .await
         }
-        TelegramCallback::VoiceCreateCancel => cancel_voice_create(bot, state, chat_id).await,
+        TelegramCallback::VoiceCreateCancel => {
+            VoiceCreateCoordinator::new(bot, state)
+                .cancel(chat_id)
+                .await
+        }
+        TelegramCallback::RegistrationPickEmployee { .. }
+        | TelegramCallback::RegistrationContinueUnlinked => Ok(()),
+        TelegramCallback::ClarificationPickEmployee { employee_id } => {
+            choose_clarified_assignee(bot, state, &actor, chat_id, employee_id).await
+        }
+        TelegramCallback::ClarificationCreateUnassigned => {
+            create_without_assignee_after_clarification(bot, state, chat_id).await
+        }
         TelegramCallback::DraftSkipAssignee => skip_guided_assignee(bot, state, chat_id).await,
         TelegramCallback::DraftSkipDeadline => skip_guided_deadline(bot, state, chat_id).await,
         TelegramCallback::DraftSubmit => submit_guided_draft(bot, state, &actor, chat_id).await,

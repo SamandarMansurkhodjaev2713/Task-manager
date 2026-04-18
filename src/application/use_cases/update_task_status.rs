@@ -4,6 +4,7 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::application::dto::task_views::TaskStatusSummary;
+use crate::application::policies::role_authorization::RoleAuthorizationPolicy;
 use crate::application::ports::repositories::{
     AuditLogRepository, NotificationRepository, TaskRepository,
 };
@@ -51,8 +52,9 @@ impl UpdateTaskStatusUseCase {
             ));
         };
 
-        let next_status = normalize_requested_status(actor, &task, requested_status)?;
-        authorize_status_change(actor, &task, next_status)?;
+        let next_status =
+            RoleAuthorizationPolicy::normalize_requested_status(actor, &task, requested_status)?;
+        RoleAuthorizationPolicy::ensure_can_change_status(actor, &task, next_status)?;
 
         let previous_status = task.status;
         let updated_task = task.transition_to(next_status, self.clock.now_utc())?;
@@ -157,95 +159,6 @@ fn notification_type_for_status(next_status: TaskStatus) -> NotificationType {
             NotificationType::TaskUpdated
         }
     }
-}
-
-fn authorize_status_change(actor: &User, task: &Task, next_status: TaskStatus) -> AppResult<()> {
-    let actor_id = actor.id.ok_or_else(|| {
-        AppError::unauthenticated(
-            "User must be registered before changing task status",
-            json!({ "telegram_id": actor.telegram_id }),
-        )
-    })?;
-
-    if actor.role.is_admin() {
-        return Ok(());
-    }
-
-    if is_creator(actor_id, task) && creator_can_change_status(task, next_status) {
-        return Ok(());
-    }
-
-    if is_assignee(actor_id, task) && assignee_can_change_status(next_status) {
-        return Ok(());
-    }
-
-    if actor.role.is_manager_or_admin() && manager_can_change_status(next_status) {
-        return Ok(());
-    }
-
-    Err(AppError::unauthorized(
-        "User is not allowed to change this task status",
-        json!({ "task_uid": task.task_uid, "next_status": next_status }),
-    ))
-}
-
-fn is_creator(actor_id: i64, task: &Task) -> bool {
-    actor_id == task.created_by_user_id
-}
-
-fn is_assignee(actor_id: i64, task: &Task) -> bool {
-    task.assigned_to_user_id == Some(actor_id)
-}
-
-fn creator_can_change_status(task: &Task, next_status: TaskStatus) -> bool {
-    match next_status {
-        TaskStatus::Completed => true,
-        TaskStatus::Cancelled => true,
-        TaskStatus::InProgress => task.status == TaskStatus::InReview,
-        TaskStatus::Created | TaskStatus::Sent | TaskStatus::Blocked | TaskStatus::InReview => {
-            false
-        }
-    }
-}
-
-fn assignee_can_change_status(next_status: TaskStatus) -> bool {
-    matches!(
-        next_status,
-        TaskStatus::InProgress | TaskStatus::InReview | TaskStatus::Blocked | TaskStatus::Cancelled
-    )
-}
-
-fn manager_can_change_status(next_status: TaskStatus) -> bool {
-    matches!(
-        next_status,
-        TaskStatus::InProgress | TaskStatus::Completed | TaskStatus::Cancelled
-    )
-}
-
-fn normalize_requested_status(
-    actor: &User,
-    task: &Task,
-    requested_status: TaskStatus,
-) -> AppResult<TaskStatus> {
-    if requested_status == TaskStatus::Completed && task.review_required() {
-        let is_creator = actor.id == Some(task.created_by_user_id);
-        if !is_creator && !actor.role.is_manager_or_admin() {
-            return Ok(TaskStatus::InReview);
-        }
-    }
-
-    if requested_status == TaskStatus::Completed
-        && task.review_required()
-        && task.status != TaskStatus::InReview
-    {
-        return Err(AppError::business_rule(
-            "TASK_REVIEW_REQUIRED",
-            "Task must go through review before final completion",
-            json!({ "task_uid": task.task_uid }),
-        ));
-    }
-
-    Ok(requested_status)
 }
 
 fn build_status_message(previous_status: TaskStatus, next_status: TaskStatus) -> String {

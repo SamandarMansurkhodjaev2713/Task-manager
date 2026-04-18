@@ -3,6 +3,7 @@ use std::sync::Arc;
 use chrono::NaiveDate;
 
 use crate::application::dto::task_views::{TaskListItem, TaskListPage, TaskListSection};
+use crate::application::policies::role_authorization::RoleAuthorizationPolicy;
 use crate::application::ports::repositories::TaskRepository;
 use crate::application::ports::services::Clock;
 use crate::domain::errors::{AppError, AppResult};
@@ -58,7 +59,7 @@ impl ListTasksUseCase {
                     .await?
             }
             TaskListScope::Team | TaskListScope::ManagerInbox => {
-                ensure_team_access(actor)?;
+                RoleAuthorizationPolicy::ensure_can_view_team_tasks(actor)?;
                 self.task_repository.list_all(cursor, page_size).await?
             }
         };
@@ -70,17 +71,6 @@ impl ListTasksUseCase {
             next_cursor,
         })
     }
-}
-
-fn ensure_team_access(actor: &User) -> AppResult<()> {
-    if actor.role.is_manager_or_admin() {
-        return Ok(());
-    }
-
-    Err(AppError::unauthorized(
-        "Only managers and admins can view team task dashboards",
-        serde_json::json!({ "telegram_id": actor.telegram_id }),
-    ))
 }
 
 fn sanitize_limit(limit: Option<u32>) -> u32 {

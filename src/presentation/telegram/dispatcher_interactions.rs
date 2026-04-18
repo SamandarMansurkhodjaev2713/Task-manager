@@ -1,6 +1,7 @@
 use teloxide::types::ChatId;
 use teloxide::Bot;
 
+use crate::application::dto::task_views::TaskCreationOutcome;
 use crate::application::use_cases::reassign_task::ReassignTaskOutcome;
 use crate::domain::message::IncomingMessage;
 use crate::domain::user::User;
@@ -168,6 +169,7 @@ pub(crate) async fn handle_task_interaction_message(
             {
                 Ok(ReassignTaskOutcome::Reassigned(summary)) => {
                     state.task_interactions.clear(chat_id.0).await;
+                    state.assignee_selections.clear(chat_id.0).await;
                     show_task_details_with_notice(
                         bot,
                         state,
@@ -183,11 +185,31 @@ pub(crate) async fn handle_task_interaction_message(
                     .await
                 }
                 Ok(ReassignTaskOutcome::ClarificationRequired(request)) => {
-                    let text = format!(
-                        "ℹ️ {}\n\nПопробуйте указать исполнителя ещё раз одним сообщением.",
-                        request.message
-                    );
-                    show_prompt_again(bot, state, &actor, chat_id, session, &text).await
+                    state
+                        .assignee_selections
+                        .set_reassign(
+                            chat_id.0,
+                            session.task_uid,
+                            session.origin,
+                            text.to_owned(),
+                            clarification_candidate_ids(&request),
+                        )
+                        .await;
+                    send_screen(
+                        bot,
+                        state,
+                        chat_id,
+                        ScreenDescriptor::TaskInteractionPrompt {
+                            task_uid: session.task_uid,
+                            origin: session.origin,
+                            kind: session.kind,
+                        },
+                        &ui::task_creation_text(&TaskCreationOutcome::ClarificationRequired(
+                            request.clone(),
+                        )),
+                        ui::clarification_keyboard(&request),
+                    )
+                    .await
                 }
                 Err(error) => send_error(bot, chat_id.0, error).await,
             }
@@ -281,4 +303,14 @@ async fn show_prompt_again(
         }
         Err(error) => send_error(bot, chat_id.0, error).await,
     }
+}
+
+fn clarification_candidate_ids(
+    request: &crate::application::dto::task_views::ClarificationRequest,
+) -> Vec<i64> {
+    request
+        .candidates
+        .iter()
+        .filter_map(|candidate| candidate.employee_id)
+        .collect()
 }

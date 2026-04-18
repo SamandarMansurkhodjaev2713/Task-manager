@@ -1,10 +1,12 @@
-use crate::application::dto::task_views::StatsView;
+use crate::application::dto::task_views::{
+    AssigneeInterpretation, EmployeeCandidateView, StatsView, TaskInterpretationPreview,
+};
 use crate::domain::user::User;
 use crate::presentation::telegram::drafts::GuidedTaskDraft;
 
 use super::super::ui_shared::{
-    CREATE_EMOJI, GUIDED_EMOJI, HELP_EMOJI, INFO_EMOJI, MENU_EMOJI, QUICK_EMOJI, SETTINGS_EMOJI,
-    SYNC_EMOJI,
+    delivery_badge, delivery_detail, CREATE_EMOJI, GUIDED_EMOJI, HELP_EMOJI, INFO_EMOJI,
+    MENU_EMOJI, QUICK_EMOJI, SETTINGS_EMOJI, SYNC_EMOJI,
 };
 
 pub fn welcome_text(actor: &User) -> String {
@@ -72,9 +74,50 @@ pub fn voice_confirmation_text(transcript: &str) -> String {
     )
 }
 
+pub fn voice_interpretation_text(preview: &TaskInterpretationPreview) -> String {
+    let deadline = preview.deadline_label.as_deref().unwrap_or("без срока");
+    let assignee = match &preview.assignee {
+        AssigneeInterpretation::None => "Пока без исполнителя".to_owned(),
+        AssigneeInterpretation::Resolved {
+            display,
+            delivery_status,
+        } => format!(
+            "{display}\nДоставка: {} — {}",
+            delivery_badge(*delivery_status),
+            delivery_detail(*delivery_status)
+        ),
+        AssigneeInterpretation::ClarificationRequired(request) => {
+            let candidates = if request.candidates.is_empty() {
+                "Нужно уточнить исполнителя вручную.".to_owned()
+            } else {
+                render_candidate_lines(&request.candidates)
+            };
+            format!("{}\n{}", request.message, candidates)
+        }
+    };
+
+    format!(
+        "{INFO_EMOJI} Я понял задачу вот так\n\nИсполнитель:\n{assignee}\n\nСрок: {deadline}\n\nЧто нужно сделать:\n{}",
+        preview.description
+    )
+}
+
 pub fn voice_edit_prompt(transcript: &str) -> String {
     format!(
         "{GUIDED_EMOJI} Исправьте текст задачи\n\nСейчас у меня такая версия:\n{transcript}\n\nПришлите одним сообщением финальный текст задачи. Я заменю расшифровку и снова покажу подтверждение."
+    )
+}
+
+pub fn registration_link_text(message: &str, candidates: &[EmployeeCandidateView]) -> String {
+    if candidates.is_empty() {
+        return format!(
+            "{INFO_EMOJI} Привязка сотрудника\n\n{message}\n\nМожно продолжить без привязки и вернуться к этому позже."
+        );
+    }
+
+    format!(
+        "{INFO_EMOJI} Привязка сотрудника\n\n{message}\n\nПодходящие варианты:\n{}",
+        render_candidate_lines(candidates)
     )
 }
 
@@ -100,17 +143,40 @@ pub fn settings_text(actor: &User) -> String {
     } else {
         "не подключены"
     };
+    let role = match actor.role {
+        crate::domain::user::UserRole::User => "employee",
+        crate::domain::user::UserRole::Manager => "manager",
+        crate::domain::user::UserRole::Admin => "admin",
+    };
 
     format!(
         "{SETTINGS_EMOJI} Профиль\n\nИмя: {}\nUsername: {}\nTelegram ID: {}\nРоль: {}\nУведомления: {}",
         actor.full_name.as_deref().unwrap_or("не указано"),
         actor.telegram_username.as_deref().unwrap_or("не указано"),
         actor.telegram_id,
-        actor.role,
+        role,
         notifications
     )
 }
 
 pub fn synced_text(count: usize) -> String {
     format!("{SYNC_EMOJI} Синхронизация завершена. Обновлено сотрудников: {count}.")
+}
+
+fn render_candidate_lines(candidates: &[EmployeeCandidateView]) -> String {
+    candidates
+        .iter()
+        .map(|candidate| {
+            let username = candidate
+                .telegram_username
+                .as_ref()
+                .map(|value| format!(" (@{value})"))
+                .unwrap_or_default();
+            format!(
+                "• {}{} — {}%",
+                candidate.full_name, username, candidate.confidence
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }

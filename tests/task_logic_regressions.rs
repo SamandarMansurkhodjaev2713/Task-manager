@@ -42,6 +42,7 @@ fn given_source_message_key_override_when_requested_then_override_is_used() {
         },
         timestamp: Utc::now(),
         source_message_key_override: Some("telegram:guided:42:draft-1".to_owned()),
+        is_voice_origin: false,
     };
 
     assert_eq!(message.source_message_key(), "telegram:guided:42:draft-1");

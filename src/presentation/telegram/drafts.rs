@@ -15,6 +15,8 @@ pub enum CreationSession {
 
 #[derive(Debug, Clone)]
 pub struct GuidedTaskDraft {
+    /// Stable identity for this draft submission; used as `source_message_key`
+    /// so that retrying the same guided submit is idempotent (INSERT OR IGNORE).
     pub submission_key: Uuid,
     pub assignee: Option<String>,
     pub description: Option<String>,

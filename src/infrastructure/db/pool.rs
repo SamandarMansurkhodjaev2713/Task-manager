@@ -1,7 +1,7 @@
 use std::str::FromStr;
 use std::time::Duration;
 
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use sqlx::SqlitePool;
 
 use crate::domain::errors::{AppError, AppResult};
@@ -17,7 +17,12 @@ pub async fn connect(database_url: &str) -> AppResult<SqlitePool> {
             serde_json::json!({ "error": error.to_string() }),
         )
     })?;
-    let options = options.create_if_missing(true);
+    // WAL mode: concurrent readers + writer without reader-writer contention.
+    // synchronous=NORMAL is safe with WAL (no data loss on OS crash, only power failure).
+    let options = options
+        .create_if_missing(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .synchronous(SqliteSynchronous::Normal);
 
     let pool = SqlitePoolOptions::new()
         .max_connections(10)

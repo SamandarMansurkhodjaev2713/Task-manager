@@ -73,13 +73,14 @@ pub(crate) async fn execute_cancel_from_command(
         .await
     {
         Ok(task_uid) => {
-            update_task_status(
+            // Show confirmation screen — same flow as the inline button to avoid
+            // accidental cancellations from a command typo.
+            confirm_task_cancel(
                 bot,
                 state,
                 actor,
                 chat_id,
                 task_uid,
-                TaskStatus::Cancelled,
                 TaskListOrigin::Created,
             )
             .await

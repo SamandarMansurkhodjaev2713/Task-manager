@@ -37,6 +37,10 @@ pub struct IncomingMessage {
     pub timestamp: DateTime<Utc>,
     #[serde(default)]
     pub source_message_key_override: Option<String>,
+    /// True when this synthetic message was constructed from a confirmed voice transcription,
+    /// so the task can be tagged as voice-originated even though content is Text.
+    #[serde(default)]
+    pub is_voice_origin: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]

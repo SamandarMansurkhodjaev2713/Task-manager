@@ -78,6 +78,14 @@ pub enum TelegramCallback {
     VoiceCreateEdit,
     VoiceCreateBack,
     VoiceCreateCancel,
+    RegistrationPickEmployee {
+        employee_id: i64,
+    },
+    RegistrationContinueUnlinked,
+    ClarificationPickEmployee {
+        employee_id: i64,
+    },
+    ClarificationCreateUnassigned,
     DraftSkipAssignee,
     DraftSkipDeadline,
     DraftSubmit,
@@ -107,6 +115,10 @@ impl TelegramCallback {
                 | Self::ExecuteTaskCancel { .. }
                 | Self::DraftSubmit
                 | Self::VoiceCreateConfirm
+                | Self::RegistrationPickEmployee { .. }
+                | Self::RegistrationContinueUnlinked
+                | Self::ClarificationPickEmployee { .. }
+                | Self::ClarificationCreateUnassigned
         )
     }
 }

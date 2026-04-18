@@ -4,6 +4,7 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::application::dto::task_views::TaskStatusSummary;
+use crate::application::policies::role_authorization::RoleAuthorizationPolicy;
 use crate::application::ports::repositories::{
     AuditLogRepository, CommentRepository, NotificationRepository, TaskRepository,
 };
@@ -59,7 +60,7 @@ impl ReportTaskBlockerUseCase {
                 json!({ "task_uid": task_uid }),
             ));
         };
-        authorize_blocker(actor, &task)?;
+        RoleAuthorizationPolicy::ensure_can_report_blocker(actor, &task)?;
 
         let previous_status = task.status;
         let updated_task = task.apply_blocker(blocker_reason, self.clock.now_utc())?;
@@ -153,22 +154,4 @@ impl ReportTaskBlockerUseCase {
         let _ = self.notification_repository.enqueue(&notification).await?;
         Ok(())
     }
-}
-
-fn authorize_blocker(actor: &User, task: &crate::domain::task::Task) -> AppResult<()> {
-    let Some(actor_id) = actor.id else {
-        return Err(AppError::unauthenticated(
-            "User must be registered before reporting a blocker",
-            json!({ "telegram_id": actor.telegram_id }),
-        ));
-    };
-
-    if actor.role.is_admin() || task.assigned_to_user_id == Some(actor_id) {
-        return Ok(());
-    }
-
-    Err(AppError::unauthorized(
-        "Only the assignee or admin can mark a task as blocked",
-        json!({ "task_uid": task.task_uid }),
-    ))
 }

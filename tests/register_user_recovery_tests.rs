@@ -193,5 +193,6 @@ fn registration_message() -> IncomingMessage {
         },
         timestamp: chrono::Utc::now(),
         source_message_key_override: None,
+        is_voice_origin: false,
     }
 }

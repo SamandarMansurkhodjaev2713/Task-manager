@@ -2,7 +2,6 @@ FROM rust:1.91-bookworm AS builder
 
 WORKDIR /app
 
-ENV CARGO_BUILD_JOBS=1
 ENV RUSTFLAGS=-Cdebuginfo=0
 
 RUN apt-get update \
@@ -20,7 +19,6 @@ FROM rust:1.91-bookworm AS test-runner
 
 WORKDIR /app
 
-ENV CARGO_BUILD_JOBS=1
 ENV RUSTFLAGS=-Cdebuginfo=0
 
 RUN apt-get update \
@@ -31,6 +29,9 @@ COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY migrations ./migrations
 COPY tests ./tests
+
+# Run unit tests (library targets only; integration tests requiring env-vars run via docker-compose).
+RUN cargo test --lib --workspace 2>&1
 
 FROM debian:bookworm-slim AS runtime
 

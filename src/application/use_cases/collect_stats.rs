@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::application::dto::task_views::StatsView;
+use crate::application::policies::role_authorization::RoleAuthorizationPolicy;
 use crate::application::ports::repositories::TaskRepository;
 use crate::domain::errors::{AppError, AppResult};
 use crate::domain::user::User;
@@ -31,12 +32,7 @@ impl CollectStatsUseCase {
         let stats = match scope {
             StatsScope::Personal => self.task_repository.count_stats_for_user(actor_id).await?,
             StatsScope::Team => {
-                if !actor.role.is_manager_or_admin() {
-                    return Err(AppError::unauthorized(
-                        "Only managers and admins can view team stats",
-                        serde_json::json!({ "telegram_id": actor.telegram_id }),
-                    ));
-                }
+                RoleAuthorizationPolicy::ensure_can_view_team_stats(actor)?;
                 self.task_repository.count_stats_global().await?
             }
         };

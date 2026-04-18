@@ -4,9 +4,8 @@ use chrono::NaiveDate;
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::application::dto::task_views::{
-    DeliveryStatus, TaskActionView, TaskCommentView, TaskStatusDetails,
-};
+use crate::application::dto::task_views::{DeliveryStatus, TaskCommentView, TaskStatusDetails};
+use crate::application::policies::role_authorization::RoleAuthorizationPolicy;
 use crate::application::ports::repositories::{
     AuditLogRepository, CommentRepository, EmployeeRepository, NotificationRepository,
     TaskRepository, UserRepository,
@@ -14,7 +13,7 @@ use crate::application::ports::repositories::{
 use crate::domain::audit::{AuditAction, AuditLogEntry};
 use crate::domain::errors::{AppError, AppResult};
 use crate::domain::notification::NotificationType;
-use crate::domain::task::{Task, TaskStatus};
+use crate::domain::task::Task;
 use crate::domain::user::User;
 use crate::shared::constants::limits::MAX_TASK_CONTEXT_PREVIEW_COMMENTS;
 use crate::shared::task_codes::{
@@ -57,7 +56,7 @@ impl GetTaskStatusUseCase {
                 json!({ "task_uid": task_uid }),
             ));
         };
-        authorize_view(actor, &task)?;
+        RoleAuthorizationPolicy::ensure_can_view_task(actor, &task)?;
 
         let Some(task_id) = task.id else {
             return Err(AppError::internal(
@@ -89,7 +88,7 @@ impl GetTaskStatusUseCase {
             delivery_status,
             blocked_reason: task.blocked_reason.clone(),
             comments: comments.iter().map(TaskCommentView::from_comment).collect(),
-            available_actions: available_actions(actor, &task),
+            available_actions: RoleAuthorizationPolicy::available_actions(actor, &task),
         })
     }
 
@@ -169,77 +168,6 @@ impl GetTaskStatusUseCase {
             direct_delivery_possible,
         )))
     }
-}
-
-fn authorize_view(actor: &User, task: &Task) -> AppResult<()> {
-    let Some(actor_id) = actor.id else {
-        return Err(AppError::unauthenticated(
-            "User must be registered before viewing task status",
-            json!({ "telegram_id": actor.telegram_id }),
-        ));
-    };
-
-    if actor.role.is_manager_or_admin()
-        || actor_id == task.created_by_user_id
-        || task.assigned_to_user_id == Some(actor_id)
-    {
-        return Ok(());
-    }
-
-    Err(AppError::unauthorized(
-        "User is not allowed to view this task",
-        json!({ "task_uid": task.task_uid }),
-    ))
-}
-
-fn available_actions(actor: &User, task: &Task) -> Vec<TaskActionView> {
-    let mut actions = Vec::new();
-    let actor_id = actor.id;
-    let is_assignee = actor_id.is_some() && task.assigned_to_user_id == actor_id;
-    let is_creator = actor_id == Some(task.created_by_user_id);
-    let is_admin = actor.role.is_admin();
-    let is_manager = actor.role.is_manager_or_admin();
-    let can_manage = is_creator || is_manager;
-
-    if matches!(
-        task.status,
-        TaskStatus::Created | TaskStatus::Sent | TaskStatus::Blocked
-    ) && (is_assignee || is_admin)
-    {
-        actions.push(TaskActionView::StartProgress);
-    }
-
-    if matches!(
-        task.status,
-        TaskStatus::Sent | TaskStatus::InProgress | TaskStatus::Blocked
-    ) && (is_assignee || is_admin)
-    {
-        actions.push(TaskActionView::SubmitForReview);
-    }
-
-    if task.status == TaskStatus::InReview && can_manage {
-        actions.push(TaskActionView::ApproveReview);
-        actions.push(TaskActionView::ReturnToWork);
-    }
-
-    if matches!(
-        task.status,
-        TaskStatus::Created | TaskStatus::Sent | TaskStatus::InProgress | TaskStatus::Blocked
-    ) && (is_assignee || is_admin)
-    {
-        actions.push(TaskActionView::ReportBlocker);
-    }
-
-    if !task.status.is_terminal() && can_manage {
-        actions.push(TaskActionView::Reassign);
-    }
-
-    if !task.status.is_terminal() && (is_assignee || can_manage || is_admin) {
-        actions.push(TaskActionView::Cancel);
-    }
-
-    actions.push(TaskActionView::AddComment);
-    actions
 }
 
 fn split_description_lines(description: &str) -> Vec<String> {

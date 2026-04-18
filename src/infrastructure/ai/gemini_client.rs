@@ -61,15 +61,15 @@ impl GeminiTaskGenerator {
         self.circuit_breaker.ensure_closed("gemini").await?;
 
         let url = format!(
-            "{}/{}:generateContent?key={}",
-            GEMINI_API_BASE_URL,
-            self.config.model,
-            self.config.api_key.expose_secret()
+            "{}/{}:generateContent",
+            GEMINI_API_BASE_URL, self.config.model
         );
         let payload = GeminiGenerateRequest::from_input(parsed_request, assignee);
         let response = self
             .client
             .post(url)
+            // API key in header instead of query param to prevent leaking it in logs / proxies.
+            .header("x-goog-api-key", self.config.api_key.expose_secret())
             .json(&payload)
             .send()
             .await

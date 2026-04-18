@@ -1,3 +1,4 @@
+use crate::application::dto::task_views::DeliveryStatus;
 use crate::application::dto::task_views::TaskCreationOutcome;
 use crate::presentation::telegram::active_screens::ScreenDescriptor;
 use crate::presentation::telegram::ui;
@@ -7,15 +8,15 @@ use super::dispatcher_guided::SessionCompletion;
 
 pub(crate) fn keyboard_for_outcome(
     outcome: &TaskCreationOutcome,
-    session_completion: SessionCompletion,
+    _session_completion: SessionCompletion,
 ) -> InlineKeyboardMarkup {
-    match session_completion {
-        SessionCompletion::KeepOnClarification
-            if matches!(outcome, TaskCreationOutcome::ClarificationRequired(_)) =>
-        {
-            ui::create_menu_keyboard()
-        }
-        _ => ui::outcome_keyboard(outcome),
+    match outcome {
+        TaskCreationOutcome::Created(summary) => ui::created_task_followup_keyboard(
+            summary,
+            summary.delivery_status == DeliveryStatus::CreatorOnly,
+        ),
+        TaskCreationOutcome::ClarificationRequired(request) => ui::clarification_keyboard(request),
+        TaskCreationOutcome::DuplicateFound(_) => ui::outcome_keyboard(outcome),
     }
 }
 

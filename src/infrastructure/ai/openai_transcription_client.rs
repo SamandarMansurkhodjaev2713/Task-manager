@@ -206,7 +206,10 @@ impl OpenAiTranscriptionClient {
 #[async_trait]
 impl SpeechToTextService for OpenAiTranscriptionClient {
     async fn transcribe(&self, voice: &VoiceAttachment) -> AppResult<String> {
-        let audio_bytes = self.download_voice(voice).await?;
+        // Both download and transcription are retried independently:
+        // download can fail on transient network errors before we have any bytes,
+        // transcription can fail after a successful download.
+        let audio_bytes = retry_with_backoff(|| self.download_voice(voice)).await?;
         retry_with_backoff(|| self.transcribe_bytes(&audio_bytes)).await
     }
 }

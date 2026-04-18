@@ -32,7 +32,9 @@ pub struct EmployeeMatch {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MatchStrategy {
-    Exact,
-    FirstNameFuzzy,
-    PartialFuzzy,
+    ExactUsername,
+    ExactFullName,
+    ExactFirstName,
+    SuggestedFirstName,
+    SuggestedFullName,
 }

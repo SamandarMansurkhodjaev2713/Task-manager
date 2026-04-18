@@ -1,55 +1,18 @@
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::fmt::{Display, Formatter};
 use uuid::Uuid;
-use validator::Validate;
 
 use crate::domain::errors::{AppError, AppResult};
-use crate::shared::constants::limits::{
-    MAX_ACCEPTANCE_CRITERIA, MAX_TASK_ACCEPTANCE_CRITERION_LENGTH, MAX_TASK_BLOCKER_REASON_LENGTH,
-    MAX_TASK_EXPECTED_RESULT_LENGTH, MAX_TASK_STEPS, MAX_TASK_STEP_LENGTH, MAX_TASK_TITLE_LENGTH,
-    MIN_TASK_STEPS,
-};
+use crate::domain::task::draft::StructuredTaskDraft;
+use crate::domain::task::types::{MessageType, TaskPriority, TaskStatus};
+use crate::shared::constants::limits::MAX_TASK_BLOCKER_REASON_LENGTH;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TaskStatus {
-    Created,
-    Sent,
-    InProgress,
-    Blocked,
-    InReview,
-    Completed,
-    Cancelled,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TaskPriority {
-    Low,
-    Medium,
-    High,
-    Urgent,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MessageType {
-    Text,
-    Voice,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
-pub struct StructuredTaskDraft {
-    #[validate(length(min = 1, max = 100))]
-    pub title: String,
-    #[validate(length(min = 1))]
-    pub expected_result: String,
-    pub steps: Vec<String>,
-    pub acceptance_criteria: Vec<String>,
-}
-
+/// The central aggregate for a work item in the system.
+///
+/// All mutations return a new `Task` value — the original is never modified in place.
+/// Every mutating operation increments `version` to support optimistic locking in the
+/// persistence layer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Task {
     pub id: Option<i64>,
@@ -86,6 +49,7 @@ pub struct Task {
     pub updated_at: DateTime<Utc>,
 }
 
+/// Aggregate statistics computed over a set of tasks for a single user.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskStats {
     pub created_count: i64,
@@ -95,82 +59,11 @@ pub struct TaskStats {
     pub average_completion_hours: Option<i64>,
 }
 
-impl StructuredTaskDraft {
-    pub fn validate_business_rules(&self) -> AppResult<()> {
-        self.validate().map_err(|error| {
-            AppError::schema_validation(
-                "TASK_DRAFT_INVALID",
-                "AI response does not match the expected schema",
-                json!({ "errors": error.to_string() }),
-            )
-        })?;
-
-        if !(MIN_TASK_STEPS..=MAX_TASK_STEPS).contains(&self.steps.len()) {
-            return Err(AppError::business_rule(
-                "TASK_STEPS_INVALID",
-                "Task must contain between 1 and 7 concrete steps",
-                json!({ "count": self.steps.len() }),
-            ));
-        }
-
-        if self.acceptance_criteria.len() > MAX_ACCEPTANCE_CRITERIA {
-            return Err(AppError::business_rule(
-                "TASK_ACCEPTANCE_CRITERIA_INVALID",
-                "Task contains too many acceptance criteria",
-                json!({ "count": self.acceptance_criteria.len() }),
-            ));
-        }
-
-        if self.title.chars().count() > MAX_TASK_TITLE_LENGTH {
-            return Err(AppError::business_rule(
-                "TASK_TITLE_TOO_LONG",
-                "Task title is too long",
-                json!({ "limit": MAX_TASK_TITLE_LENGTH }),
-            ));
-        }
-
-        if self.expected_result.chars().count() > MAX_TASK_EXPECTED_RESULT_LENGTH {
-            return Err(AppError::business_rule(
-                "TASK_EXPECTED_RESULT_TOO_LONG",
-                "Task expected result is too long",
-                json!({ "limit": MAX_TASK_EXPECTED_RESULT_LENGTH }),
-            ));
-        }
-
-        if let Some(step_length) = self
-            .steps
-            .iter()
-            .map(|value| value.chars().count())
-            .find(|value| *value > MAX_TASK_STEP_LENGTH)
-        {
-            return Err(AppError::business_rule(
-                "TASK_STEP_TOO_LONG",
-                "Task contains a step that is too long for Telegram delivery",
-                json!({ "limit": MAX_TASK_STEP_LENGTH, "length": step_length }),
-            ));
-        }
-
-        if let Some(criterion_length) = self
-            .acceptance_criteria
-            .iter()
-            .map(|value| value.chars().count())
-            .find(|value| *value > MAX_TASK_ACCEPTANCE_CRITERION_LENGTH)
-        {
-            return Err(AppError::business_rule(
-                "TASK_ACCEPTANCE_CRITERION_TOO_LONG",
-                "Task contains an acceptance criterion that is too long for Telegram delivery",
-                json!({
-                    "limit": MAX_TASK_ACCEPTANCE_CRITERION_LENGTH,
-                    "length": criterion_length,
-                }),
-            ));
-        }
-
-        Ok(())
-    }
-}
-
 impl Task {
+    /// Creates a new task from an AI-produced `StructuredTaskDraft`.
+    ///
+    /// Validates all draft business rules before constructing the entity so that
+    /// invalid drafts are rejected at the domain boundary rather than persisted.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         source_message_key: String,
@@ -226,6 +119,9 @@ impl Task {
         })
     }
 
+    /// Advances the task to `next_status`, recording the transition timestamp.
+    ///
+    /// Returns an error if the transition is not permitted by the state machine.
     pub fn transition_to(&self, next_status: TaskStatus, now: DateTime<Utc>) -> AppResult<Self> {
         if !self.status.can_transition_to(next_status) {
             return Err(AppError::business_rule(
@@ -264,8 +160,10 @@ impl Task {
         Ok(next_task)
     }
 
-    /// Blockers are stored on the task so the current blocking reason is visible in the card
-    /// without forcing the UI to reconstruct it from the full comment history.
+    /// Transitions the task to `Blocked` and records the human-readable blocker reason.
+    ///
+    /// Blockers are stored on the task so the current blocking reason is visible in the
+    /// card without forcing the UI to reconstruct it from the full comment history.
     pub fn apply_blocker(&self, reason: impl Into<String>, now: DateTime<Utc>) -> AppResult<Self> {
         let normalized_reason = reason.into().trim().to_owned();
         if normalized_reason.is_empty() {
@@ -289,8 +187,10 @@ impl Task {
         Ok(next_task)
     }
 
-    /// Reassignment resets ownership-specific progress to avoid leaving a new assignee with a
-    /// stale in-progress/review state that belongs to the previous executor.
+    /// Assigns the task to a new owner and resets all progress timestamps.
+    ///
+    /// Reassignment resets ownership-specific progress to avoid leaving a new
+    /// assignee with a stale in-progress/review state that belongs to the previous executor.
     pub fn reassign(
         &self,
         assigned_to_user_id: Option<i64>,
@@ -321,8 +221,11 @@ impl Task {
         Ok(next_task)
     }
 
-    /// Late registration links an already assigned employee directory record to a concrete user
-    /// account without resetting the current business status of the task.
+    /// Links a concrete user account to a task that was previously assigned only via
+    /// the employee directory (i.e. before the assignee had registered).
+    ///
+    /// Late registration links an already-assigned employee directory record to a
+    /// concrete user account without resetting the current business status of the task.
     pub fn link_registered_assignee(
         &self,
         assigned_to_user_id: i64,
@@ -347,10 +250,15 @@ impl Task {
         Ok(next_task)
     }
 
+    /// Returns `true` when the task has a different person as creator and assignee,
+    /// meaning the assignee must explicitly accept/review the work before it closes.
     pub fn review_required(&self) -> bool {
         matches!(self.assigned_to_user_id, Some(user_id) if user_id != self.created_by_user_id)
     }
 
+    /// Renders the task as a Telegram-ready text message body.
+    ///
+    /// Includes an optional mention of the assignee at the top of the card.
     pub fn render_for_telegram(&self, assignee_mention: Option<&str>) -> String {
         let mut lines = Vec::new();
 
@@ -389,50 +297,11 @@ impl Task {
     }
 }
 
-impl TaskStatus {
-    pub fn can_transition_to(self, next: Self) -> bool {
-        matches!(
-            (self, next),
-            (Self::Created, Self::Sent)
-                | (Self::Created, Self::InProgress)
-                | (Self::Created, Self::Blocked)
-                | (Self::Created, Self::Cancelled)
-                | (Self::Sent, Self::InProgress)
-                | (Self::Sent, Self::Blocked)
-                | (Self::Sent, Self::InReview)
-                | (Self::Sent, Self::Cancelled)
-                | (Self::InProgress, Self::Blocked)
-                | (Self::InProgress, Self::InReview)
-                | (Self::InProgress, Self::Cancelled)
-                | (Self::Blocked, Self::InProgress)
-                | (Self::Blocked, Self::InReview)
-                | (Self::Blocked, Self::Cancelled)
-                | (Self::InReview, Self::InProgress)
-                | (Self::InReview, Self::Completed)
-                | (Self::InReview, Self::Cancelled)
-        )
-    }
-
-    pub fn is_terminal(self) -> bool {
-        matches!(self, Self::Completed | Self::Cancelled)
-    }
-}
-
-impl Display for TaskStatus {
-    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
-        let value = match self {
-            Self::Created => "created",
-            Self::Sent => "sent",
-            Self::InProgress => "in_progress",
-            Self::Blocked => "blocked",
-            Self::InReview => "in_review",
-            Self::Completed => "completed",
-            Self::Cancelled => "cancelled",
-        };
-        formatter.write_str(value)
-    }
-}
-
+/// Sets a status-specific timestamp on first entry.
+///
+/// If `next_status == target_status` and no timestamp has been recorded yet,
+/// records `now`. Otherwise preserves the existing value so re-entries (e.g.
+/// going Blocked → InProgress → Blocked again) do not overwrite the first record.
 fn mark_timestamp(
     next_status: TaskStatus,
     target_status: TaskStatus,

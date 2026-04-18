@@ -9,6 +9,7 @@ use validator::Validate;
 use crate::domain::errors::{AppError, AppResult};
 
 const DEFAULT_GEMINI_MODEL: &str = "gemini-2.5-flash";
+const DEFAULT_RATE_LIMIT_PER_MINUTE: u32 = 20;
 const DEFAULT_OPENAI_TRANSCRIPTION_MODEL: &str = "gpt-4o-mini-transcribe";
 const DEFAULT_BIND_ADDRESS: &str = "0.0.0.0:8080";
 const DEFAULT_LOG_LEVEL: &str = "info,telegram_task_bot=debug";
@@ -23,6 +24,7 @@ pub struct AppConfig {
     pub http_server: HttpServerConfig,
     pub observability: ObservabilityConfig,
     pub scheduler: SchedulerConfig,
+    pub bot: BotBehaviorConfig,
 }
 
 #[derive(Debug, Clone, Validate, Serialize)]
@@ -87,6 +89,11 @@ pub struct SchedulerConfig {
     pub daily_summary_hour_utc: u32,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct BotBehaviorConfig {
+    pub rate_limit_per_minute: NonZeroU32,
+}
+
 impl AppConfig {
     pub fn from_env() -> AppResult<Self> {
         dotenvy::dotenv().ok();
@@ -132,6 +139,12 @@ impl AppConfig {
                 daily_deadline_reminder_hour_utc: optional_u32("DEADLINE_REMINDER_HOUR_UTC", 9)?,
                 daily_overdue_scan_hour_utc: optional_u32("OVERDUE_SCAN_HOUR_UTC", 10)?,
                 daily_summary_hour_utc: optional_u32("DAILY_SUMMARY_HOUR_UTC", 8)?,
+            },
+            bot: BotBehaviorConfig {
+                rate_limit_per_minute: non_zero_u32(
+                    "RATE_LIMIT_PER_MINUTE",
+                    DEFAULT_RATE_LIMIT_PER_MINUTE,
+                )?,
             },
         };
 

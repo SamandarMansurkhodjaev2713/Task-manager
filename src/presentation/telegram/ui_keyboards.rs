@@ -4,8 +4,8 @@ use super::ui_shared::{
     action_label, back_label, is_dangerous_action, next_best_action, status_badge, truncate_title,
 };
 use crate::application::dto::task_views::{
-    DeliveryStatus, TaskActionView, TaskCreationOutcome, TaskListItem, TaskListPage,
-    TaskStatusDetails,
+    DeliveryStatus, EmployeeCandidateView, TaskActionView, TaskCreationOutcome, TaskListItem,
+    TaskListPage, TaskStatusDetails,
 };
 use crate::domain::user::User;
 use crate::presentation::telegram::callbacks::{
@@ -77,6 +77,14 @@ pub fn create_menu_keyboard() -> InlineKeyboardMarkup {
         ],
         vec![button("🏠 В меню", TelegramCallback::MenuHome)],
     ])
+}
+
+/// Keyboard shown during the quick-capture session.
+/// Intentionally minimal — the user is already in capture mode; mode-switch buttons
+/// belong on CreateMenu, not on QuickCreate, where their `ScreenDescriptor` would
+/// mismatch and produce a confusing "экран устарел" toast.
+pub fn quick_capture_keyboard() -> InlineKeyboardMarkup {
+    InlineKeyboardMarkup::new(vec![vec![button("🏠 В меню", TelegramCallback::MenuHome)]])
 }
 
 pub fn task_list_keyboard(origin: TaskListOrigin, page: &TaskListPage) -> InlineKeyboardMarkup {
@@ -399,4 +407,103 @@ fn back_callback(origin: TaskListOrigin) -> TelegramCallback {
 
 fn button(text: &str, callback: TelegramCallback) -> InlineKeyboardButton {
     InlineKeyboardButton::callback(text.to_owned(), encode_callback(&callback))
+}
+
+pub fn clarification_keyboard(
+    request: &crate::application::dto::task_views::ClarificationRequest,
+) -> InlineKeyboardMarkup {
+    let mut rows = request
+        .candidates
+        .iter()
+        .filter_map(|candidate| {
+            candidate.employee_id.map(|employee_id| {
+                vec![button(
+                    &clarification_candidate_label(candidate),
+                    TelegramCallback::ClarificationPickEmployee { employee_id },
+                )]
+            })
+        })
+        .collect::<Vec<_>>();
+
+    if request.allow_unassigned {
+        rows.push(vec![button(
+            "Создать без исполнителя",
+            TelegramCallback::ClarificationCreateUnassigned,
+        )]);
+    }
+
+    rows.push(vec![button(
+        "🆕 К меню создания",
+        TelegramCallback::MenuCreate,
+    )]);
+    rows.push(vec![button("🏠 В меню", TelegramCallback::MenuHome)]);
+
+    InlineKeyboardMarkup::new(rows)
+}
+
+pub fn registration_link_keyboard(
+    candidates: &[EmployeeCandidateView],
+    allow_continue_unlinked: bool,
+) -> InlineKeyboardMarkup {
+    let mut rows = candidates
+        .iter()
+        .filter_map(|candidate| {
+            candidate.employee_id.map(|employee_id| {
+                vec![button(
+                    &clarification_candidate_label(candidate),
+                    TelegramCallback::RegistrationPickEmployee { employee_id },
+                )]
+            })
+        })
+        .collect::<Vec<_>>();
+
+    if allow_continue_unlinked {
+        rows.push(vec![button(
+            "Продолжить без привязки",
+            TelegramCallback::RegistrationContinueUnlinked,
+        )]);
+    }
+
+    InlineKeyboardMarkup::new(rows)
+}
+
+pub fn created_task_followup_keyboard(
+    summary: &crate::application::dto::task_views::TaskCreationSummary,
+    allow_assign_owner: bool,
+) -> InlineKeyboardMarkup {
+    let mut rows = vec![vec![button(
+        "📋 Открыть карточку",
+        TelegramCallback::OpenTask {
+            task_uid: summary.task_uid,
+            origin: TaskListOrigin::Created,
+            mode: TaskCardMode::Compact,
+        },
+    )]];
+
+    if allow_assign_owner {
+        rows.push(vec![button(
+            "👤 Кто будет отвечать?",
+            TelegramCallback::StartTaskReassignInput {
+                task_uid: summary.task_uid,
+                origin: TaskListOrigin::Created,
+            },
+        )]);
+    }
+
+    rows.push(vec![
+        button("🆕 Ещё задача", TelegramCallback::MenuCreate),
+        button("🏠 В меню", TelegramCallback::MenuHome),
+    ]);
+
+    InlineKeyboardMarkup::new(rows)
+}
+
+fn clarification_candidate_label(candidate: &EmployeeCandidateView) -> String {
+    let username = candidate
+        .telegram_username
+        .as_ref()
+        .map(|value| format!(" (@{value})"))
+        .unwrap_or_default();
+
+    format!("{}{}", candidate.full_name, username)
 }

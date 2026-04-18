@@ -5,7 +5,7 @@ use crate::domain::task::{MessageType, TaskPriority, TaskStatus};
 use crate::domain::user::UserRole;
 
 pub(crate) const USER_COLUMNS: &str =
-    "id, telegram_id, last_chat_id, telegram_username, full_name, is_employee, role, created_at, updated_at";
+    "id, telegram_id, last_chat_id, telegram_username, full_name, linked_employee_id, is_employee, role, created_at, updated_at";
 pub(crate) const EMPLOYEE_COLUMNS: &str =
     "id, full_name, telegram_username, email, phone, department, is_active, synced_at, created_at, updated_at";
 pub(crate) const TASK_COLUMNS: &str =

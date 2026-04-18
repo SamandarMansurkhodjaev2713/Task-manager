@@ -20,11 +20,13 @@ use crate::domain::errors::AppError;
 use crate::infrastructure::telegram::bot_gateway::TeloxideNotifier;
 use crate::presentation::telegram::active_screens::ActiveScreenStore;
 use crate::presentation::telegram::active_screens::ScreenDescriptor;
+use crate::presentation::telegram::assignee_selections::PendingAssigneeSelectionStore;
 use crate::presentation::telegram::callbacks::TelegramCallback;
 use crate::presentation::telegram::commands::parse_command;
 use crate::presentation::telegram::drafts::CreationSessionStore;
 use crate::presentation::telegram::interactions::TaskInteractionSessionStore;
 use crate::presentation::telegram::rate_limiter::TelegramRateLimiter;
+use crate::presentation::telegram::registration_links::PendingRegistrationLinkStore;
 
 use self::dispatcher_guided::{
     create_task_and_present, handle_creation_session_message, SessionCompletion,
@@ -33,11 +35,14 @@ use self::dispatcher_handlers::{
     check_rate_limit, handle_callback_action, handle_command, register_actor,
 };
 use self::dispatcher_interactions::handle_task_interaction_message;
+use self::dispatcher_registration::handle_registration_link_callback;
 use self::dispatcher_transport::{
     answer_callback, callback_to_incoming_message, to_incoming_message,
 };
-use self::dispatcher_voice::start_voice_create;
+use self::dispatcher_voice::VoiceCreateCoordinator;
 
+#[path = "dispatcher_assignee_clarifications.rs"]
+mod dispatcher_assignee_clarifications;
 #[path = "dispatcher_creation_outcomes.rs"]
 mod dispatcher_creation_outcomes;
 #[path = "dispatcher_guided.rs"]
@@ -50,6 +55,8 @@ mod dispatcher_handlers;
 mod dispatcher_interactions;
 #[path = "dispatcher_navigation.rs"]
 mod dispatcher_navigation;
+#[path = "dispatcher_registration.rs"]
+mod dispatcher_registration;
 #[path = "dispatcher_task_views.rs"]
 mod dispatcher_task_views;
 #[path = "dispatcher_transport.rs"]
@@ -75,6 +82,8 @@ pub struct TelegramRuntime {
     pub notifier: TeloxideNotifier,
     pub rate_limiter: TelegramRateLimiter,
     pub active_screens: ActiveScreenStore,
+    pub assignee_selections: PendingAssigneeSelectionStore,
+    pub registration_links: PendingRegistrationLinkStore,
     pub creation_sessions: CreationSessionStore,
     pub task_interactions: TaskInteractionSessionStore,
     pub register_user_use_case: Arc<RegisterUserUseCase>,
@@ -140,7 +149,9 @@ async fn handle_message(
         &incoming_message.content,
         crate::domain::message::MessageContent::Voice { .. }
     ) {
-        return start_voice_create(&bot, &state, incoming_message).await;
+        return VoiceCreateCoordinator::new(&bot, &state)
+            .start(&actor, incoming_message)
+            .await;
     }
 
     create_task_and_present(
@@ -214,6 +225,14 @@ async fn handle_callback_query(
     };
     answer_callback(&bot, &callback_query.id.to_string(), callback_answer).await?;
 
+    if matches!(
+        callback,
+        TelegramCallback::RegistrationPickEmployee { .. }
+            | TelegramCallback::RegistrationContinueUnlinked
+    ) {
+        return handle_registration_link_callback(&bot, &state, incoming_message, callback).await;
+    }
+
     handle_callback_action(&bot, &state, incoming_message, actor, callback).await
 }
 
@@ -261,6 +280,18 @@ fn callback_matches_screen(callback: &TelegramCallback, descriptor: &ScreenDescr
         | TelegramCallback::VoiceCreateCancel => {
             matches!(descriptor, ScreenDescriptor::VoiceCreate(_))
         }
+        TelegramCallback::RegistrationPickEmployee { .. }
+        | TelegramCallback::RegistrationContinueUnlinked => {
+            matches!(descriptor, ScreenDescriptor::RegistrationLinking)
+        }
+        TelegramCallback::ClarificationPickEmployee { .. }
+        | TelegramCallback::ClarificationCreateUnassigned => matches!(
+            descriptor,
+            ScreenDescriptor::TaskCreationResult { .. }
+                | ScreenDescriptor::TaskInteractionPrompt { .. }
+                | ScreenDescriptor::VoiceCreate(_)
+                | ScreenDescriptor::GuidedStep(_)
+        ),
         TelegramCallback::DraftSkipAssignee | TelegramCallback::DraftEdit { .. } => {
             matches!(descriptor, ScreenDescriptor::GuidedStep(_))
         }

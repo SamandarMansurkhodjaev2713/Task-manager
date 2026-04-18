@@ -6,7 +6,8 @@ use serde_json::json;
 use tracing::instrument;
 
 use crate::application::dto::task_views::{
-    DeliveryStatus, TaskCreationOutcome, TaskCreationSummary,
+    AssigneeInterpretation, DeliveryStatus, TaskCreationOutcome, TaskCreationSummary,
+    TaskInterpretationPreview,
 };
 use crate::application::ports::repositories::{
     AuditLogRepository, NotificationRepository, PersistedTask, TaskRepository, UserRepository,
@@ -35,6 +36,13 @@ pub struct CreateTaskFromMessageUseCase {
     assignee_resolver: Arc<AssigneeResolver>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskAssigneeDecision {
+    Auto,
+    EmployeeId(i64),
+    CreateUnassigned,
+}
+
 impl CreateTaskFromMessageUseCase {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -61,6 +69,16 @@ impl CreateTaskFromMessageUseCase {
 
     #[instrument(skip_all, fields(chat_id = message.chat_id, message_id = message.message_id))]
     pub async fn execute(&self, message: IncomingMessage) -> AppResult<TaskCreationOutcome> {
+        self.execute_with_assignee_decision(message, TaskAssigneeDecision::Auto)
+            .await
+    }
+
+    #[instrument(skip_all, fields(chat_id = message.chat_id, message_id = message.message_id))]
+    pub async fn execute_with_assignee_decision(
+        &self,
+        message: IncomingMessage,
+        assignee_decision: TaskAssigneeDecision,
+    ) -> AppResult<TaskCreationOutcome> {
         let started_at = Instant::now();
         let message_type_label = message_type_label(&message.content);
         counter!("task_creation_requests_total", "message_type" => message_type_label).increment(1);
@@ -69,7 +87,9 @@ impl CreateTaskFromMessageUseCase {
         let original_text = self.extract_original_text(&message).await?;
         let creator = self.register_creator(&message).await?;
         let parsed_request = parse_task_request(&original_text, self.clock.today_utc())?;
-        let assignee_resolution = self.resolve_assignee(&parsed_request).await?;
+        let assignee_resolution = self
+            .resolve_assignee(&parsed_request, assignee_decision)
+            .await?;
 
         let (assignee_user, assignee_employee) = match assignee_resolution {
             AssigneeResolution::Resolved(resolved) => {
@@ -94,7 +114,7 @@ impl CreateTaskFromMessageUseCase {
             parsed_request.deadline,
             parsed_request.deadline_raw.clone(),
             original_text,
-            task_message_type(&message.content),
+            task_message_type(&message.content, message.is_voice_origin),
             generated_task.model_name,
             generated_task.raw_response,
             message.chat_id,
@@ -163,10 +183,76 @@ impl CreateTaskFromMessageUseCase {
         self.user_repository.upsert_from_message(&user).await
     }
 
+    pub async fn preview_interpretation(
+        &self,
+        message: &IncomingMessage,
+    ) -> AppResult<TaskInterpretationPreview> {
+        let original_text = self.extract_original_text(message).await?;
+        let parsed_request = parse_task_request(&original_text, self.clock.today_utc())?;
+        let deadline_label = parsed_request
+            .deadline
+            .map(|value| value.format("%d.%m.%Y").to_string());
+
+        let assignee = if parsed_request.explicit_unassigned
+            || parsed_request.assignee_name.as_deref().is_none()
+        {
+            AssigneeInterpretation::None
+        } else {
+            let query = parsed_request.assignee_name.as_deref().unwrap_or_default();
+            match self.assignee_resolver.resolve_for_creation(query).await? {
+                AssigneeResolution::Resolved(resolved) => {
+                    let display = resolved
+                        .employee
+                        .as_ref()
+                        .map(|employee| employee.full_name.clone())
+                        .or_else(|| {
+                            resolved.user.as_ref().and_then(|user| {
+                                user.telegram_username
+                                    .as_ref()
+                                    .map(|username| format!("@{username}"))
+                                    .or_else(|| user.full_name.clone())
+                            })
+                        })
+                        .unwrap_or_else(|| "Unassigned".to_owned());
+                    let delivery_status = preview_delivery_status(&resolved);
+                    AssigneeInterpretation::Resolved {
+                        display,
+                        delivery_status,
+                    }
+                }
+                AssigneeResolution::ClarificationRequired(request) => {
+                    AssigneeInterpretation::ClarificationRequired(request)
+                }
+            }
+        };
+
+        Ok(TaskInterpretationPreview {
+            description: parsed_request.task_description,
+            deadline_label,
+            assignee,
+        })
+    }
+
     async fn resolve_assignee(
         &self,
         parsed_request: &crate::domain::message::ParsedTaskRequest,
+        assignee_decision: TaskAssigneeDecision,
     ) -> AppResult<AssigneeResolution> {
+        if matches!(assignee_decision, TaskAssigneeDecision::CreateUnassigned) {
+            return Ok(AssigneeResolution::Resolved(Box::new(ResolvedAssignee {
+                user: None,
+                employee: None,
+            })));
+        }
+
+        if let TaskAssigneeDecision::EmployeeId(employee_id) = assignee_decision {
+            let resolved = self
+                .assignee_resolver
+                .resolve_employee_id(employee_id)
+                .await?;
+            return Ok(AssigneeResolution::Resolved(Box::new(resolved)));
+        }
+
         if parsed_request.explicit_unassigned {
             return Ok(AssigneeResolution::Resolved(Box::new(ResolvedAssignee {
                 user: None,
@@ -181,7 +267,9 @@ impl CreateTaskFromMessageUseCase {
             })));
         };
 
-        self.assignee_resolver.resolve(assignee_query).await
+        self.assignee_resolver
+            .resolve_for_creation(assignee_query)
+            .await
     }
 
     async fn log_task_creation(
@@ -270,7 +358,10 @@ fn required_user_id(user: &User) -> AppResult<i64> {
     })
 }
 
-fn task_message_type(content: &MessageContent) -> MessageType {
+fn task_message_type(content: &MessageContent, is_voice_origin: bool) -> MessageType {
+    if is_voice_origin {
+        return MessageType::Voice;
+    }
     match content {
         MessageContent::Voice { .. } => MessageType::Voice,
         MessageContent::Text { .. } | MessageContent::Command { .. } => MessageType::Text,
@@ -334,4 +425,22 @@ fn message_type_label(content: &MessageContent) -> &'static str {
         MessageContent::Voice { .. } => "voice",
         MessageContent::Command { .. } => "command",
     }
+}
+
+fn preview_delivery_status(resolved: &ResolvedAssignee) -> DeliveryStatus {
+    let has_employee_match = resolved.employee.is_some();
+    let has_direct_user = resolved
+        .user
+        .as_ref()
+        .is_some_and(|user| user.last_chat_id.is_some());
+
+    if !has_employee_match && resolved.user.is_none() {
+        return DeliveryStatus::CreatorOnly;
+    }
+
+    if has_direct_user {
+        return DeliveryStatus::PendingDelivery;
+    }
+
+    DeliveryStatus::PendingAssigneeRegistration
 }

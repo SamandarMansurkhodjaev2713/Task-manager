@@ -1,9 +1,9 @@
 use teloxide::types::ChatId;
 use teloxide::Bot;
 
+use crate::application::policies::role_authorization::RoleAuthorizationPolicy;
 use crate::application::use_cases::collect_stats::StatsScope;
 use crate::application::use_cases::list_tasks::TaskListScope;
-use crate::domain::errors::AppError;
 use crate::domain::user::User;
 use crate::presentation::telegram::active_screens::ScreenDescriptor;
 use crate::presentation::telegram::callbacks::TaskListOrigin;
@@ -20,6 +20,8 @@ pub(crate) async fn show_main_menu(
 ) -> Result<(), teloxide::RequestError> {
     state.creation_sessions.clear(chat_id.0).await;
     state.task_interactions.clear(chat_id.0).await;
+    state.assignee_selections.clear(chat_id.0).await;
+    state.registration_links.clear(chat_id.0).await;
     send_screen(
         bot,
         state,
@@ -39,6 +41,8 @@ pub(crate) async fn show_main_menu_fresh(
 ) -> Result<(), teloxide::RequestError> {
     state.creation_sessions.clear(chat_id.0).await;
     state.task_interactions.clear(chat_id.0).await;
+    state.assignee_selections.clear(chat_id.0).await;
+    state.registration_links.clear(chat_id.0).await;
     send_fresh_screen(
         bot,
         state,
@@ -91,6 +95,8 @@ pub(crate) async fn show_create_menu(
 ) -> Result<(), teloxide::RequestError> {
     state.creation_sessions.clear(chat_id.0).await;
     state.task_interactions.clear(chat_id.0).await;
+    state.assignee_selections.clear(chat_id.0).await;
+    state.registration_links.clear(chat_id.0).await;
     send_screen(
         bot,
         state,
@@ -166,16 +172,8 @@ pub(crate) async fn sync_employees(
     chat_id: ChatId,
     actor: &User,
 ) -> Result<(), teloxide::RequestError> {
-    if !actor.role.is_admin() {
-        return send_error(
-            bot,
-            chat_id.0,
-            AppError::unauthorized(
-                "Only admins can trigger employee sync",
-                serde_json::json!({}),
-            ),
-        )
-        .await;
+    if let Err(error) = RoleAuthorizationPolicy::ensure_can_sync_employees(actor) {
+        return send_error(bot, chat_id.0, error).await;
     }
 
     match state.sync_employees_use_case.execute().await {

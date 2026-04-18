@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find /c/Users/sam4k/task-tg-bot -name \"*.rs\" -exec grep -l \"unwrap\\\\|panic\\\\|expect\" {} \\\\;)",
+      "Bash(cargo check *)",
+      "Bash(cargo test *)",
+      "Bash(powershell -Command \"Get-Content 'src\\\\presentation\\\\telegram\\\\ui_keyboards.rs' -Encoding UTF8 | Select-Object -Skip 403 -First 40\")",
+      "Bash(python3)",
+      "Bash(python3 -c ' *)",
+      "Bash(find C:\\\\\\\\Users\\\\\\\\sam4k\\\\\\\\task-tg-bot -name \"entity.rs\" -o -name \"types.rs\")",
+      "Bash(cargo clippy *)",
+      "Bash(cargo fmt *)",
+      "Bash(cargo clean *)"
+    ]
+  }
+}

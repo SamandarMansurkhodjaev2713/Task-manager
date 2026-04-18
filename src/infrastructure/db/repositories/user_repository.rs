@@ -22,12 +22,13 @@ impl SqliteUserRepository {
 impl UserRepository for SqliteUserRepository {
     async fn upsert_from_message(&self, user: &User) -> AppResult<User> {
         let query = format!(
-            "INSERT INTO users (telegram_id, last_chat_id, telegram_username, full_name, is_employee, role, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            "INSERT INTO users (telegram_id, last_chat_id, telegram_username, full_name, linked_employee_id, is_employee, role, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(telegram_id) DO UPDATE SET
                last_chat_id = excluded.last_chat_id,
                telegram_username = excluded.telegram_username,
                full_name = excluded.full_name,
+               linked_employee_id = COALESCE(excluded.linked_employee_id, users.linked_employee_id),
                is_employee = MAX(users.is_employee, excluded.is_employee),
                updated_at = excluded.updated_at
              RETURNING {USER_COLUMNS}"
@@ -38,6 +39,7 @@ impl UserRepository for SqliteUserRepository {
             .bind(user.last_chat_id)
             .bind(&user.telegram_username)
             .bind(&user.full_name)
+            .bind(user.linked_employee_id)
             .bind(bool_as_i64(user.is_employee))
             .bind(user_role_to_db(user.role))
             .bind(user.created_at)

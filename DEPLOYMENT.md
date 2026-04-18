@@ -76,9 +76,49 @@ Current Docker setup uses:
 
 ## Migration strategy
 
-- migrations must remain additive
-- snapshot the SQLite database before rollout
-- if rollback is needed, restore the snapshot and redeploy the previous binary
+Migrations must remain additive (no destructive schema changes except via explicit
+table-recreation migrations like 005).
+
+### Rollback procedure
+
+SQLite does not support `DOWN` migrations.  The rollback procedure is snapshot-based:
+
+**Before every release:**
+
+```bash
+# 1. Stop the bot (ensures no writes during copy)
+docker compose stop telegram-task-bot
+
+# 2. Snapshot the database
+SNAPSHOT_NAME="app_$(date +%Y%m%dT%H%M%S).db.bak"
+cp /path/to/data/app.db "/path/to/backups/${SNAPSHOT_NAME}"
+echo "Snapshot saved: ${SNAPSHOT_NAME}"
+
+# 3. Deploy the new version
+docker compose pull telegram-task-bot
+docker compose up -d telegram-task-bot
+```
+
+**If rollback is needed:**
+
+```bash
+# 1. Stop the new version
+docker compose stop telegram-task-bot
+
+# 2. Restore the snapshot (overwrites the migrated database)
+cp "/path/to/backups/${SNAPSHOT_NAME}" /path/to/data/app.db
+
+# 3. Redeploy the previous image tag
+docker compose up -d telegram-task-bot  # ensure COMPOSE_IMAGE_TAG points to previous tag
+```
+
+**Constraints:**
+- Only safe if the new schema migration is *additive*.  Recreating-table migrations
+  (e.g., 005) that preserve all row data are also safe to roll back via snapshot.
+- Any data written *after* the snapshot (new tasks, comments, etc.) is lost.
+  For a small team this window is typically < 5 minutes; communicate before rollout.
+- If you cannot afford data loss, export affected rows before stopping and re-import
+  after restoring the snapshot.
 
 ## Operational checks after deployment
 

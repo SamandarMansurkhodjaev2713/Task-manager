@@ -142,9 +142,22 @@ Voice is a first-class creation flow:
 
 1. user sends a voice message
 2. the bot transcribes it
-3. the bot shows one confirmation screen with the transcript
+3. the bot shows one confirmation screen with the interpreted description, assignee, deadline, and any ambiguity warning
 4. the user can confirm, edit, or cancel
 5. only then is the task created
+
+If the interpreted assignee is unsafe:
+- the bot does not create the task yet
+- it asks the user to choose the exact person explicitly
+- the user can still create deliberately without assignee when that path is allowed
+
+## Registration linking
+
+If `/start` cannot safely link the Telegram account to exactly one employee:
+- the bot opens a dedicated linking screen
+- it shows explicit candidate buttons
+- it allows continuing without linking only as a deliberate choice
+- it never auto-links “close enough” employee identities
 
 ### Guided create
 

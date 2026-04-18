@@ -36,10 +36,12 @@ use crate::infrastructure::scheduler::BackgroundJobs;
 use crate::infrastructure::telegram::bot_gateway::TeloxideNotifier;
 use crate::presentation::http::spawn_http_server;
 use crate::presentation::telegram::active_screens::ActiveScreenStore;
+use crate::presentation::telegram::assignee_selections::PendingAssigneeSelectionStore;
 use crate::presentation::telegram::dispatcher::{run_telegram_dispatcher, TelegramRuntime};
 use crate::presentation::telegram::drafts::CreationSessionStore;
 use crate::presentation::telegram::interactions::TaskInteractionSessionStore;
 use crate::presentation::telegram::rate_limiter::TelegramRateLimiter;
+use crate::presentation::telegram::registration_links::PendingRegistrationLinkStore;
 
 pub async fn run_application(config: AppConfig) -> AppResult<()> {
     let metrics_handle = init_metrics()?;
@@ -174,8 +176,10 @@ pub async fn run_application(config: AppConfig) -> AppResult<()> {
     let http_server = spawn_http_server(config.http_server.clone(), metrics_handle);
     let telegram_runtime = TelegramRuntime {
         notifier,
-        rate_limiter: TelegramRateLimiter::new(),
+        rate_limiter: TelegramRateLimiter::new(config.bot.rate_limit_per_minute),
         active_screens: ActiveScreenStore::default(),
+        assignee_selections: PendingAssigneeSelectionStore::default(),
+        registration_links: PendingRegistrationLinkStore::default(),
         creation_sessions: CreationSessionStore::default(),
         task_interactions: TaskInteractionSessionStore::default(),
         register_user_use_case,

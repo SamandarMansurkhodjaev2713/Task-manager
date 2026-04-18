@@ -125,6 +125,7 @@ pub(crate) fn build_guided_message(
             "telegram:guided:{chat_id}:{}",
             draft.submission_key
         )),
+        is_voice_origin: false,
     }
 }
 

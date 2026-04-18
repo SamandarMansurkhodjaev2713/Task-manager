@@ -3,6 +3,7 @@ use std::sync::Arc;
 use serde_json::json;
 use uuid::Uuid;
 
+use crate::application::policies::role_authorization::RoleAuthorizationPolicy;
 use crate::application::ports::repositories::{
     AuditLogRepository, CommentRepository, NotificationRepository, TaskRepository,
 };
@@ -52,7 +53,7 @@ impl AddTaskCommentUseCase {
                 json!({ "task_uid": task_uid }),
             ));
         };
-        authorize_comment(actor, &task)?;
+        RoleAuthorizationPolicy::ensure_can_comment(actor, &task)?;
 
         let Some(task_id) = task.id else {
             return Err(AppError::internal(
@@ -133,25 +134,4 @@ impl AddTaskCommentUseCase {
         }
         Ok(())
     }
-}
-
-fn authorize_comment(actor: &User, task: &crate::domain::task::Task) -> AppResult<()> {
-    let Some(actor_id) = actor.id else {
-        return Err(AppError::unauthenticated(
-            "User must be registered before commenting on a task",
-            json!({ "telegram_id": actor.telegram_id }),
-        ));
-    };
-
-    if actor.role.is_manager_or_admin()
-        || actor_id == task.created_by_user_id
-        || task.assigned_to_user_id == Some(actor_id)
-    {
-        return Ok(());
-    }
-
-    Err(AppError::unauthorized(
-        "User is not allowed to comment on this task",
-        json!({ "task_uid": task.task_uid }),
-    ))
 }
