@@ -12,6 +12,9 @@ pub enum NotificationType {
     TaskReviewRequested,
     TaskBlocked,
     DailySummary,
+    /// Fired by the SLA escalation worker when a task transitions to
+    /// `at_risk` or `breached`.  Gated by the `sla_escalations` feature flag.
+    SlaEscalation,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

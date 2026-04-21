@@ -35,6 +35,10 @@ pub enum MatchStrategy {
     ExactUsername,
     ExactFullName,
     ExactFirstName,
+    /// The query is an unambiguous prefix of exactly one employee's first name
+    /// (e.g. "ABD" → "Abdullazi").  Always requires user confirmation — never
+    /// auto-assigned — because partial names have higher mis-assignment risk.
+    PrefixFirstName,
     SuggestedFirstName,
     SuggestedFullName,
 }

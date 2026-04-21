@@ -3,7 +3,9 @@ use std::sync::Arc;
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::application::dto::task_views::{ClarificationRequest, TaskStatusSummary};
+use crate::application::dto::task_views::{
+    format_task_body_preview_for_clarification, ClarificationRequest, TaskStatusSummary,
+};
 use crate::application::policies::role_authorization::RoleAuthorizationPolicy;
 use crate::application::ports::repositories::{
     AuditLogRepository, NotificationRepository, TaskRepository,
@@ -110,7 +112,9 @@ impl ReassignTaskUseCase {
                 let ResolvedAssignee { user, employee } = *resolved;
                 (user, employee)
             }
-            AssigneeResolution::ClarificationRequired(request) => {
+            AssigneeResolution::ClarificationRequired(mut request) => {
+                request.task_body_preview =
+                    Some(format_task_body_preview_for_clarification("", &task.title));
                 return Ok(ReassignTaskOutcome::ClarificationRequired(request));
             }
         };

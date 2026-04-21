@@ -94,6 +94,17 @@ impl AppError {
         }
     }
 
+    /// Semantic alias for "authenticated but lacks permission" — complements `unauthorized`,
+    /// which in this codebase historically covers both `401` and `403`.
+    /// New RBAC code should prefer `forbidden` for clarity.
+    pub fn forbidden(code: &'static str, message: impl Into<String>, context: Value) -> Self {
+        Self::Auth {
+            code,
+            message: message.into(),
+            context,
+        }
+    }
+
     pub fn not_found(code: &'static str, message: impl Into<String>, context: Value) -> Self {
         Self::NotFound {
             code,

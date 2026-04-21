@@ -7,10 +7,11 @@ use crate::application::dto::task_views::{
     DeliveryStatus, EmployeeCandidateView, TaskActionView, TaskCreationOutcome, TaskListItem,
     TaskListPage, TaskStatusDetails,
 };
-use crate::domain::user::User;
+use crate::domain::user::{User, UserRole};
+use crate::presentation::telegram::admin_nonce_store::PendingAdminAction;
 use crate::presentation::telegram::callbacks::{
-    action_to_status, encode_callback, DraftEditField, TaskCardMode, TaskListOrigin,
-    TelegramCallback,
+    action_to_status, encode_callback, AdminRoleOption, DraftEditField, TaskCardMode,
+    TaskListOrigin, TelegramCallback,
 };
 
 pub fn main_menu_keyboard(actor: &User) -> InlineKeyboardMarkup {
@@ -245,6 +246,41 @@ pub fn guided_assignee_keyboard() -> InlineKeyboardMarkup {
         )],
         vec![button("🏠 В меню", TelegramCallback::MenuHome)],
     ])
+}
+
+/// Suggestion keyboard shown during the guided Assignee step when the entered
+/// text produces ambiguous or partial-confidence matches.
+///
+/// Each candidate gets its own button.  The "Без исполнителя" escape and the
+/// home button are always appended so the user is never trapped.
+pub fn guided_assignee_suggestions_keyboard(
+    candidates: &[crate::application::dto::task_views::EmployeeCandidateView],
+) -> InlineKeyboardMarkup {
+    let mut rows: Vec<Vec<teloxide::types::InlineKeyboardButton>> = candidates
+        .iter()
+        .filter_map(|candidate| {
+            candidate.employee_id.map(|employee_id| {
+                // Show username in parentheses when available so the user
+                // can cross-reference against their Telegram contacts.
+                let label = match candidate.telegram_username.as_deref() {
+                    Some(username) => format!("{} (@{})", candidate.full_name, username),
+                    None => candidate.full_name.clone(),
+                };
+                vec![button(
+                    &label,
+                    TelegramCallback::GuidedAssigneeConfirm { employee_id },
+                )]
+            })
+        })
+        .collect();
+
+    rows.push(vec![button(
+        "Без исполнителя",
+        TelegramCallback::DraftSkipAssignee,
+    )]);
+    rows.push(vec![button("🏠 В меню", TelegramCallback::MenuHome)]);
+
+    InlineKeyboardMarkup::new(rows)
 }
 
 pub fn guided_deadline_keyboard() -> InlineKeyboardMarkup {
@@ -506,4 +542,216 @@ fn clarification_candidate_label(candidate: &EmployeeCandidateView) -> String {
         .unwrap_or_default();
 
     format!("{}{}", candidate.full_name, username)
+}
+
+// ── Admin-panel keyboards (Phase 4) ──────────────────────────────────────
+
+/// Top-level admin-panel menu.  We intentionally keep only a small number of
+/// options here so the admin can reach anything in at most two taps.
+pub fn admin_menu_keyboard() -> InlineKeyboardMarkup {
+    InlineKeyboardMarkup::new(vec![
+        vec![button("👥 Администраторы", TelegramCallback::AdminUsers)],
+        vec![
+            button("📜 Журнал действий", TelegramCallback::AdminAudit),
+            button("🔐 Безопасность", TelegramCallback::AdminSecurityAudit),
+        ],
+        vec![button("🚩 Флаги функций", TelegramCallback::AdminFeatures)],
+        vec![button("🏠 В меню", TelegramCallback::MenuHome)],
+    ])
+}
+
+/// Lists the currently active admins.  Each row opens the user's detail
+/// card — role changes and deactivate/reactivate live there to avoid
+/// overflowing the screen.  If the actor is viewing the list, they see
+/// their own row but cannot click into it (the detail-card callback still
+/// hits the self-target guard).
+pub fn admin_users_keyboard(users: &[User]) -> InlineKeyboardMarkup {
+    let mut rows = users
+        .iter()
+        .filter_map(|user| {
+            user.id.map(|user_id| {
+                vec![button(
+                    &admin_user_list_label(user),
+                    TelegramCallback::AdminUserDetails { user_id },
+                )]
+            })
+        })
+        .collect::<Vec<_>>();
+
+    rows.push(vec![button("↩️ В панель", TelegramCallback::AdminMenu)]);
+    rows.push(vec![button("🏠 В меню", TelegramCallback::MenuHome)]);
+
+    InlineKeyboardMarkup::new(rows)
+}
+
+/// User detail card — shows role-change buttons, deactivate / reactivate,
+/// and navigation.  We hide role buttons for the current role so the admin
+/// can't accidentally submit a "no-op" action (which would still cost them
+/// a nonce round-trip).
+pub fn admin_user_details_keyboard(target: &User) -> InlineKeyboardMarkup {
+    let mut rows: Vec<Vec<InlineKeyboardButton>> = Vec::new();
+
+    let user_id = match target.id {
+        Some(id) => id,
+        None => {
+            rows.push(vec![button("↩️ В панель", TelegramCallback::AdminMenu)]);
+            return InlineKeyboardMarkup::new(rows);
+        }
+    };
+
+    let mut role_row = Vec::new();
+    for role in [
+        (AdminRoleOption::User, UserRole::User, "👤 Пользователь"),
+        (AdminRoleOption::Manager, UserRole::Manager, "🧭 Менеджер"),
+        (AdminRoleOption::Admin, UserRole::Admin, "🛡 Админ"),
+    ] {
+        let (option, domain_role, label) = role;
+        if target.role == domain_role {
+            continue;
+        }
+        role_row.push(button(
+            label,
+            TelegramCallback::AdminUserPrepareRoleChange {
+                user_id,
+                next_role: option,
+            },
+        ));
+    }
+    if !role_row.is_empty() {
+        rows.push(role_row);
+    }
+
+    if target.deactivated_at.is_some() {
+        rows.push(vec![button(
+            "✅ Активировать",
+            TelegramCallback::AdminUserPrepareReactivate { user_id },
+        )]);
+    } else {
+        rows.push(vec![button(
+            "⛔ Деактивировать",
+            TelegramCallback::AdminUserPrepareDeactivate { user_id },
+        )]);
+    }
+
+    rows.push(vec![button("👥 К списку", TelegramCallback::AdminUsers)]);
+    rows.push(vec![button("↩️ В панель", TelegramCallback::AdminMenu)]);
+    rows.push(vec![button("🏠 В меню", TelegramCallback::MenuHome)]);
+
+    InlineKeyboardMarkup::new(rows)
+}
+
+/// Two-step confirmation keyboard for destructive admin actions.  The nonce
+/// is baked into the "Confirm" button so the underlying action is
+/// tamper-proof — the user can't swap `user_id` before confirming.
+pub fn admin_confirmation_keyboard(nonce: &str) -> InlineKeyboardMarkup {
+    InlineKeyboardMarkup::new(vec![
+        vec![
+            button(
+                "✅ Подтвердить",
+                TelegramCallback::AdminConfirmNonce {
+                    nonce: nonce.to_owned(),
+                },
+            ),
+            button("❌ Отмена", TelegramCallback::AdminCancelPending),
+        ],
+        vec![button("↩️ В панель", TelegramCallback::AdminMenu)],
+    ])
+}
+
+/// Simple back-to-menu keyboard shown at the end of transient admin
+/// screens (audit log, etc.).
+pub fn admin_back_keyboard() -> InlineKeyboardMarkup {
+    InlineKeyboardMarkup::new(vec![
+        vec![button("↩️ В панель", TelegramCallback::AdminMenu)],
+        vec![button("🏠 В меню", TelegramCallback::MenuHome)],
+    ])
+}
+
+/// Feature flag management keyboard.  Shows one toggle row per flag
+/// with a ✅/⬜ indicator and a button to flip the state; the last two
+/// rows are navigation anchors.
+///
+/// `flags` must be `all_flags()` from the live [`FeatureFlagRegistry`].
+pub fn admin_features_keyboard(
+    flags: &[(crate::shared::feature_flags::FeatureFlag, bool)],
+) -> InlineKeyboardMarkup {
+    let mut rows: Vec<Vec<InlineKeyboardButton>> = flags
+        .iter()
+        .map(|(flag, enabled)| {
+            let label = if *enabled {
+                format!("✅ {} (откл.)", flag.as_key())
+            } else {
+                format!("⬜ {} (вкл.)", flag.as_key())
+            };
+            vec![button(
+                &label,
+                TelegramCallback::AdminToggleFeature {
+                    flag_key: flag.as_key().to_owned(),
+                },
+            )]
+        })
+        .collect();
+    rows.push(vec![button("↩️ В панель", TelegramCallback::AdminMenu)]);
+    rows.push(vec![button("🏠 В меню", TelegramCallback::MenuHome)]);
+    InlineKeyboardMarkup::new(rows)
+}
+
+fn admin_user_list_label(user: &User) -> String {
+    let display = user.display_name_object();
+    let name = if matches!(
+        display.kind(),
+        crate::domain::user::DisplayNameKind::Anonymous
+    ) {
+        format!("ID {}", user.telegram_id)
+    } else {
+        display.as_str().to_owned()
+    };
+
+    let role_badge = match user.role {
+        UserRole::Admin => "🛡",
+        UserRole::Manager => "🧭",
+        UserRole::User => "👤",
+    };
+    let deact = if user.deactivated_at.is_some() {
+        " • ⛔"
+    } else {
+        ""
+    };
+    format!("{role_badge} {name}{deact}")
+}
+
+/// Human-readable summary of a pending admin action, used inside the
+/// confirmation screen.  Extracted here so the dispatcher can format the
+/// message and keyboard in one place.
+pub fn describe_pending_admin_action(action: &PendingAdminAction) -> String {
+    match action {
+        PendingAdminAction::ChangeRole {
+            display_name,
+            next_role,
+            target_telegram_id,
+            ..
+        } => {
+            let role_label = match next_role {
+                AdminRoleOption::User => "пользователь",
+                AdminRoleOption::Manager => "менеджер",
+                AdminRoleOption::Admin => "админ",
+            };
+            format!(
+                "Назначить пользователю {display_name} (tg id {target_telegram_id}) роль: {role_label}"
+            )
+        }
+        PendingAdminAction::Deactivate {
+            display_name,
+            target_telegram_id,
+            ..
+        } => format!(
+            "Деактивировать пользователя {display_name} (tg id {target_telegram_id}).\n\
+             Он потеряет доступ к боту до ручной реактивации."
+        ),
+        PendingAdminAction::Reactivate {
+            display_name,
+            target_telegram_id,
+            ..
+        } => format!("Реактивировать пользователя {display_name} (tg id {target_telegram_id})."),
+    }
 }

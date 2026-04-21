@@ -3,31 +3,41 @@ use std::sync::Arc;
 use secrecy::ExposeSecret;
 use teloxide::Bot;
 
+use crate::application::ports::repositories::FeatureFlagRepository;
 use crate::application::ports::services::TelegramNotifier;
 use crate::application::use_cases::add_task_comment::AddTaskCommentUseCase;
+use crate::application::use_cases::admin::AdminUseCase;
 use crate::application::use_cases::assignee_resolution::AssigneeResolver;
+use crate::application::use_cases::bootstrap_admins::BootstrapAdminsUseCase;
 use crate::application::use_cases::collect_stats::CollectStatsUseCase;
 use crate::application::use_cases::create_task_from_message::CreateTaskFromMessageUseCase;
 use crate::application::use_cases::enqueue_daily_summaries::EnqueueDailySummariesUseCase;
 use crate::application::use_cases::enqueue_task_reminders::EnqueueTaskRemindersUseCase;
 use crate::application::use_cases::get_task_status::GetTaskStatusUseCase;
 use crate::application::use_cases::list_tasks::ListTasksUseCase;
+use crate::application::use_cases::onboarding::OnboardingUseCase;
 use crate::application::use_cases::process_notifications::ProcessNotificationsUseCase;
+use crate::application::use_cases::process_recurrence_rules::ProcessRecurrenceRulesUseCase;
 use crate::application::use_cases::reassign_task::ReassignTaskUseCase;
 use crate::application::use_cases::register_user::RegisterUserUseCase;
 use crate::application::use_cases::report_task_blocker::ReportTaskBlockerUseCase;
+use crate::application::use_cases::search_tasks::SearchTasksUseCase;
 use crate::application::use_cases::sync_employees::SyncEmployeesUseCase;
+use crate::application::use_cases::update_sla_states::UpdateSlaStatesUseCase;
 use crate::application::use_cases::update_task_status::UpdateTaskStatusUseCase;
 use crate::config::AppConfig;
 use crate::domain::errors::AppResult;
+use crate::infrastructure::ai::directory_digest::EmployeeDirectoryDigest;
 use crate::infrastructure::ai::gemini_client::GeminiTaskGenerator;
 use crate::infrastructure::ai::local_task_generator::LocalTaskGenerator;
 use crate::infrastructure::ai::openai_transcription_client::OpenAiTranscriptionClient;
 use crate::infrastructure::clock::system_clock::SystemClock;
 use crate::infrastructure::db::pool::connect;
 use crate::infrastructure::db::repositories::{
-    SqliteAuditLogRepository, SqliteCommentRepository, SqliteEmployeeRepository,
-    SqliteNotificationRepository, SqliteTaskRepository, SqliteUserRepository,
+    SqliteAdminAuditLogRepository, SqliteAuditLogRepository, SqliteCommentRepository,
+    SqliteEmployeeRepository, SqliteFeatureFlagRepository, SqliteNotificationRepository,
+    SqliteRecurrenceRepository, SqliteSecurityAuditLogRepository, SqliteSlaRepository,
+    SqliteTaskRepository, SqliteUserRepository,
 };
 use crate::infrastructure::employee_directory::google_sheets_client::GoogleSheetsEmployeeDirectory;
 use crate::infrastructure::employee_directory::local_directory::LocalEmployeeDirectory;
@@ -36,12 +46,15 @@ use crate::infrastructure::scheduler::BackgroundJobs;
 use crate::infrastructure::telegram::bot_gateway::TeloxideNotifier;
 use crate::presentation::http::spawn_http_server;
 use crate::presentation::telegram::active_screens::ActiveScreenStore;
+use crate::presentation::telegram::admin_nonce_store::AdminNonceStore;
 use crate::presentation::telegram::assignee_selections::PendingAssigneeSelectionStore;
 use crate::presentation::telegram::dispatcher::{run_telegram_dispatcher, TelegramRuntime};
 use crate::presentation::telegram::drafts::CreationSessionStore;
+use crate::presentation::telegram::gateway::{ChatSerializer, UpdateDedup};
 use crate::presentation::telegram::interactions::TaskInteractionSessionStore;
 use crate::presentation::telegram::rate_limiter::TelegramRateLimiter;
 use crate::presentation::telegram::registration_links::PendingRegistrationLinkStore;
+use crate::shared::feature_flags::FeatureFlagRegistry;
 
 pub async fn run_application(config: AppConfig) -> AppResult<()> {
     let metrics_handle = init_metrics()?;
@@ -53,17 +66,52 @@ pub async fn run_application(config: AppConfig) -> AppResult<()> {
     let notification_repository = Arc::new(SqliteNotificationRepository::new(pool.clone()));
     let audit_log_repository = Arc::new(SqliteAuditLogRepository::new(pool.clone()));
     let comment_repository = Arc::new(SqliteCommentRepository::new(pool.clone()));
+    let admin_audit_repository = Arc::new(SqliteAdminAuditLogRepository::new(pool.clone()));
+    let feature_flag_repository = Arc::new(SqliteFeatureFlagRepository::new(pool.clone()));
+    let security_audit_repository = Arc::new(SqliteSecurityAuditLogRepository::new(pool.clone()));
+
+    // ── Feature flags ─────────────────────────────────────────────────────
+    // Build the in-memory registry from ENV defaults, then layer in any
+    // admin-overrides that were persisted in the DB from previous runs.
+    let db_flag_overrides = feature_flag_repository.list_overrides().await?;
+    let mut flag_registry =
+        FeatureFlagRegistry::from_env_and_defaults(config.features.env_value.as_deref());
+    flag_registry.apply_overrides(&db_flag_overrides);
+    let shared_flags = std::sync::Arc::new(tokio::sync::RwLock::new(flag_registry));
 
     let clock = Arc::new(SystemClock);
+
+    // ── RBAC bootstrap ─────────────────────────────────────────────────────
+    // This MUST run before the Telegram dispatcher starts handling updates
+    // so that privileged operations (e.g. `/admin`) succeed on first use
+    // for operators listed in `TELEGRAM_ADMIN_IDS`.  Missing users (those
+    // who have not sent `/start` yet) are silently skipped; they will be
+    // promoted on their next `/start` via a fallback check inside the
+    // onboarding / registration path (Phase 4).
+    let bootstrap_admins_use_case = BootstrapAdminsUseCase::new(
+        clock.clone(),
+        user_repository.clone(),
+        admin_audit_repository.clone(),
+    );
+    bootstrap_admins_use_case
+        .execute(&config.security.admin_ids)
+        .await?;
+
     let assignee_resolver = Arc::new(AssigneeResolver::new(
         user_repository.clone(),
         employee_repository.clone(),
     ));
+    let directory_digest_provider: Arc<
+        dyn crate::application::ports::services::DirectoryDigestProvider,
+    > = Arc::new(EmployeeDirectoryDigest::new(employee_repository.clone()));
     let task_generator: Arc<dyn crate::application::ports::services::TaskGenerator> =
         if is_placeholder(config.gemini.api_key.expose_secret()) {
             Arc::new(LocalTaskGenerator)
         } else {
-            Arc::new(GeminiTaskGenerator::new(config.gemini.clone())?)
+            Arc::new(
+                GeminiTaskGenerator::new(config.gemini.clone())?
+                    .with_directory_digest(directory_digest_provider.clone()),
+            )
         };
     let speech_to_text_service = Arc::new(OpenAiTranscriptionClient::new(
         config.telegram.clone(),
@@ -143,6 +191,19 @@ pub async fn run_application(config: AppConfig) -> AppResult<()> {
         notification_repository.clone(),
         audit_log_repository.clone(),
     ));
+    let onboarding_use_case = Arc::new(OnboardingUseCase::new(
+        user_repository.clone(),
+        employee_repository.clone(),
+        register_user_use_case.clone(),
+    ));
+    let admin_use_case = Arc::new(AdminUseCase::new(
+        clock.clone(),
+        user_repository.clone(),
+        admin_audit_repository.clone(),
+        feature_flag_repository,
+        shared_flags.clone(),
+    ));
+    let search_tasks_use_case = Arc::new(SearchTasksUseCase::new(task_repository.clone()));
     let sync_employees_use_case = Arc::new(SyncEmployeesUseCase::new(
         employee_repository,
         employee_directory_gateway,
@@ -160,10 +221,24 @@ pub async fn run_application(config: AppConfig) -> AppResult<()> {
         notification_repository.clone(),
     ));
     let enqueue_daily_summaries_use_case = Arc::new(EnqueueDailySummariesUseCase::new(
-        clock,
+        clock.clone(),
         user_repository,
-        task_repository,
+        task_repository.clone(),
+        notification_repository.clone(),
+    ));
+    let sla_repository = Arc::new(SqliteSlaRepository::new(pool.clone()));
+    let recurrence_repository = Arc::new(SqliteRecurrenceRepository::new(pool.clone()));
+    let update_sla_states_use_case = Arc::new(UpdateSlaStatesUseCase::new(
+        clock.clone(),
+        sla_repository,
         notification_repository,
+        shared_flags.clone(),
+    ));
+    let process_recurrence_rules_use_case = Arc::new(ProcessRecurrenceRulesUseCase::new(
+        clock,
+        recurrence_repository,
+        task_repository,
+        shared_flags.clone(),
     ));
 
     let background_jobs = BackgroundJobs::start(
@@ -172,8 +247,10 @@ pub async fn run_application(config: AppConfig) -> AppResult<()> {
         process_notifications_use_case.clone(),
         enqueue_task_reminders_use_case,
         enqueue_daily_summaries_use_case,
+        update_sla_states_use_case,
+        process_recurrence_rules_use_case,
     );
-    let http_server = spawn_http_server(config.http_server.clone(), metrics_handle);
+    let http_server = spawn_http_server(config.http_server.clone(), metrics_handle, pool.clone());
     let telegram_runtime = TelegramRuntime {
         notifier,
         rate_limiter: TelegramRateLimiter::new(config.bot.rate_limit_per_minute),
@@ -182,7 +259,9 @@ pub async fn run_application(config: AppConfig) -> AppResult<()> {
         registration_links: PendingRegistrationLinkStore::default(),
         creation_sessions: CreationSessionStore::default(),
         task_interactions: TaskInteractionSessionStore::default(),
+        admin_nonce_store: AdminNonceStore::new(config.security.admin_nonce_ttl_seconds),
         register_user_use_case,
+        onboarding_use_case,
         create_task_use_case,
         list_tasks_use_case,
         get_task_status_use_case,
@@ -192,6 +271,15 @@ pub async fn run_application(config: AppConfig) -> AppResult<()> {
         reassign_task_use_case,
         collect_stats_use_case,
         sync_employees_use_case,
+        admin_use_case,
+        search_tasks_use_case,
+        feature_flags: shared_flags,
+        security_audit: security_audit_repository,
+        chat_serializer: ChatSerializer::new(),
+        update_dedup: UpdateDedup::new(),
+        current_barriers: std::sync::Arc::new(tokio::sync::Mutex::new(
+            std::collections::HashMap::new(),
+        )),
     };
     let telegram_handle = tokio::spawn(run_telegram_dispatcher(telegram_runtime));
 

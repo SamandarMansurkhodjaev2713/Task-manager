@@ -3,7 +3,20 @@ use serde_json::json;
 use crate::application::dto::task_views::TaskActionView;
 use crate::domain::errors::{AppError, AppResult};
 use crate::domain::task::{Task, TaskStatus};
-use crate::domain::user::User;
+use crate::domain::user::{User, UserRole};
+
+/// Error code returned when a non-admin actor attempts any RBAC-gated
+/// action reserved for admins (admin panel, role changes, feature toggles).
+pub const FORBIDDEN_ADMIN_ONLY: &str = "FORBIDDEN_ADMIN_ONLY";
+/// Error code returned when a deactivated account attempts any action
+/// that requires an active session.  We prefer a dedicated code over the
+/// generic `UNAUTHORIZED` so the UI can surface an "account deactivated"
+/// message.
+pub const FORBIDDEN_ACCOUNT_DEACTIVATED: &str = "FORBIDDEN_ACCOUNT_DEACTIVATED";
+/// Error code returned when an admin attempts to change their own role
+/// or deactivate their own account — such actions must go through another
+/// admin to keep the last-admin invariant recoverable.
+pub const FORBIDDEN_SELF_TARGET: &str = "FORBIDDEN_SELF_TARGET";
 
 pub struct RoleAuthorizationPolicy;
 
@@ -40,6 +53,93 @@ impl RoleAuthorizationPolicy {
             json!({ "telegram_id": actor.telegram_id }),
         ))
     }
+
+    // ── Admin-only gates (RBAC Phase 3) ────────────────────────────────────
+
+    /// Baseline check applied at the very top of every admin-panel callback.
+    /// Returns `AppError::forbidden` (not `unauthorized`) so that the UI can
+    /// emit a distinct "access denied" screen.
+    pub fn ensure_can_access_admin_panel(actor: &User) -> AppResult<()> {
+        Self::ensure_active(actor)?;
+        if actor.role.is_admin() {
+            return Ok(());
+        }
+        Err(AppError::forbidden(
+            FORBIDDEN_ADMIN_ONLY,
+            "Only admins can open the admin panel",
+            json!({
+                "telegram_id": actor.telegram_id,
+                "role": actor.role.to_string(),
+            }),
+        ))
+    }
+
+    /// Gate for changing another user's role.  In addition to the
+    /// admin-only check, we forbid self-targeting so an admin cannot lock
+    /// themselves out — another admin must perform the action.
+    pub fn ensure_can_manage_roles(actor: &User, target: &User) -> AppResult<()> {
+        Self::ensure_can_access_admin_panel(actor)?;
+        Self::ensure_not_self(actor, target, "manage_roles")
+    }
+
+    /// Gate for toggling feature flags from the admin panel.
+    pub fn ensure_can_toggle_features(actor: &User) -> AppResult<()> {
+        Self::ensure_can_access_admin_panel(actor)
+    }
+
+    /// Gate for deactivating another user.  Like [`Self::ensure_can_manage_roles`],
+    /// self-targeting is forbidden to preserve the last-admin invariant.
+    pub fn ensure_can_deactivate_user(actor: &User, target: &User) -> AppResult<()> {
+        Self::ensure_can_access_admin_panel(actor)?;
+        Self::ensure_not_self(actor, target, "deactivate_user")
+    }
+
+    /// Gate for reading (not mutating) admin-panel screens such as the
+    /// audit log viewer.  Currently identical to the mutation gate but
+    /// kept as a distinct symbol so we can loosen/tighten it independently
+    /// (e.g. letting auditors open read-only screens in the future).
+    pub fn ensure_can_view_admin_panel(actor: &User) -> AppResult<()> {
+        Self::ensure_can_access_admin_panel(actor)
+    }
+
+    /// Common "this user is allowed to do *anything*" gate.  Rejects
+    /// deactivated accounts up-front so deactivation propagates without a
+    /// server restart.  Intended to be called from every use case that is
+    /// RBAC-sensitive — including regular ones once Phase 8 wires this in.
+    pub fn ensure_active(actor: &User) -> AppResult<()> {
+        if actor.deactivated_at.is_some() {
+            return Err(AppError::forbidden(
+                FORBIDDEN_ACCOUNT_DEACTIVATED,
+                "This account is deactivated",
+                json!({
+                    "telegram_id": actor.telegram_id,
+                    "deactivated_at": actor.deactivated_at,
+                }),
+            ));
+        }
+        Ok(())
+    }
+
+    fn ensure_not_self(actor: &User, target: &User, operation: &'static str) -> AppResult<()> {
+        let same_persistent_id = matches!((actor.id, target.id), (Some(a), Some(b)) if a == b);
+        let same_telegram_id = actor.telegram_id == target.telegram_id;
+        if same_persistent_id || same_telegram_id {
+            return Err(AppError::forbidden(
+                FORBIDDEN_SELF_TARGET,
+                "An admin cannot apply this action to themselves",
+                json!({
+                    "operation": operation,
+                    "telegram_id": actor.telegram_id,
+                    "target_role": target.role.to_string(),
+                }),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Stable snapshot of the admin role — useful for comparisons where we
+    /// want `UserRole::Admin` without pulling the enum across every caller.
+    pub const ADMIN_ROLE: UserRole = UserRole::Admin;
 
     pub fn ensure_can_view_task(actor: &User, task: &Task) -> AppResult<()> {
         let actor_id = required_actor_id(actor, "view task status")?;
@@ -287,16 +387,78 @@ mod tests {
         assert_eq!(normalized, TaskStatus::InReview);
     }
 
+    // ── RBAC Phase 3 admin-gate tests ─────────────────────────────────────
+
+    #[test]
+    fn given_non_admin_when_accessing_admin_panel_then_returns_forbidden_admin_only() {
+        let actor = user(Some(7), UserRole::Manager);
+
+        let err = RoleAuthorizationPolicy::ensure_can_access_admin_panel(&actor).unwrap_err();
+
+        assert_eq!(err.code(), super::FORBIDDEN_ADMIN_ONLY);
+    }
+
+    #[test]
+    fn given_active_admin_when_accessing_admin_panel_then_allows() {
+        let actor = user(Some(7), UserRole::Admin);
+
+        RoleAuthorizationPolicy::ensure_can_access_admin_panel(&actor)
+            .expect("active admin has access");
+    }
+
+    #[test]
+    fn given_deactivated_admin_when_accessing_admin_panel_then_returns_account_deactivated() {
+        let mut actor = user(Some(7), UserRole::Admin);
+        actor.deactivated_at = Some(chrono::Utc::now());
+
+        let err = RoleAuthorizationPolicy::ensure_can_access_admin_panel(&actor).unwrap_err();
+
+        assert_eq!(err.code(), super::FORBIDDEN_ACCOUNT_DEACTIVATED);
+    }
+
+    #[test]
+    fn given_admin_when_managing_own_role_then_returns_forbidden_self_target() {
+        let admin = user(Some(7), UserRole::Admin);
+        let target = admin.clone();
+
+        let err = RoleAuthorizationPolicy::ensure_can_manage_roles(&admin, &target).unwrap_err();
+
+        assert_eq!(err.code(), super::FORBIDDEN_SELF_TARGET);
+    }
+
+    #[test]
+    fn given_admin_when_managing_another_user_then_allows() {
+        let admin = user(Some(7), UserRole::Admin);
+        let mut target = user(Some(8), UserRole::User);
+        target.telegram_id = 101;
+
+        RoleAuthorizationPolicy::ensure_can_manage_roles(&admin, &target)
+            .expect("admin can manage others");
+    }
+
     fn user(id: Option<i64>, role: UserRole) -> User {
+        use crate::domain::user::{
+            OnboardingState, DEFAULT_QUIET_HOURS_END_MIN, DEFAULT_QUIET_HOURS_START_MIN,
+            DEFAULT_USER_TIMEZONE,
+        };
+
         User {
             id,
             telegram_id: 100,
             last_chat_id: Some(100),
             telegram_username: Some("tester".to_owned()),
             full_name: Some("Tester".to_owned()),
+            first_name: Some("Tester".to_owned()),
+            last_name: Some("McTest".to_owned()),
             linked_employee_id: Some(5),
             is_employee: true,
             role,
+            onboarding_state: OnboardingState::Completed,
+            onboarding_version: 0,
+            timezone: DEFAULT_USER_TIMEZONE.to_owned(),
+            quiet_hours_start_min: DEFAULT_QUIET_HOURS_START_MIN,
+            quiet_hours_end_min: DEFAULT_QUIET_HOURS_END_MIN,
+            deactivated_at: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
         }

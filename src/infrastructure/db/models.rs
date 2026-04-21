@@ -3,13 +3,15 @@ use serde_json::Value;
 use sqlx::FromRow;
 use uuid::Uuid;
 
-use crate::domain::audit::{AuditAction, AuditLogEntry};
+use crate::domain::audit::{
+    AdminAuditEntry, AuditAction, AuditActionCode, AuditLogEntry, SecurityAuditEntry,
+};
 use crate::domain::comment::{CommentKind, TaskComment};
 use crate::domain::employee::Employee;
 use crate::domain::errors::{AppError, AppResult};
 use crate::domain::notification::{Notification, NotificationDeliveryState, NotificationType};
 use crate::domain::task::{MessageType, Task, TaskPriority, TaskStatus};
-use crate::domain::user::{User, UserRole};
+use crate::domain::user::{OnboardingState, User, UserRole};
 
 #[derive(Debug, FromRow)]
 pub struct UserRow {
@@ -18,9 +20,17 @@ pub struct UserRow {
     pub last_chat_id: Option<i64>,
     pub telegram_username: Option<String>,
     pub full_name: Option<String>,
+    pub first_name: Option<String>,
+    pub last_name: Option<String>,
     pub linked_employee_id: Option<i64>,
     pub is_employee: i64,
     pub role: String,
+    pub onboarding_state: Option<String>,
+    pub onboarding_version: i64,
+    pub timezone: String,
+    pub quiet_hours_start_min: i64,
+    pub quiet_hours_end_min: i64,
+    pub deactivated_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -117,6 +127,26 @@ pub struct CommentRow {
     pub created_at: DateTime<Utc>,
 }
 
+#[derive(Debug, FromRow)]
+pub struct AdminAuditLogRow {
+    pub id: i64,
+    pub actor_user_id: Option<i64>,
+    pub target_user_id: Option<i64>,
+    pub action_code: String,
+    pub metadata: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, FromRow)]
+pub struct SecurityAuditLogRow {
+    pub id: i64,
+    pub actor_user_id: Option<i64>,
+    pub telegram_id: Option<i64>,
+    pub event_code: String,
+    pub metadata: String,
+    pub created_at: DateTime<Utc>,
+}
+
 impl TryFrom<UserRow> for User {
     type Error = AppError;
 
@@ -127,9 +157,19 @@ impl TryFrom<UserRow> for User {
             last_chat_id: value.last_chat_id,
             telegram_username: value.telegram_username,
             full_name: value.full_name,
+            first_name: value.first_name,
+            last_name: value.last_name,
             linked_employee_id: value.linked_employee_id,
             is_employee: value.is_employee != 0,
             role: parse_user_role(&value.role)?,
+            onboarding_state: OnboardingState::from_storage_value(
+                value.onboarding_state.as_deref(),
+            ),
+            onboarding_version: value.onboarding_version,
+            timezone: value.timezone,
+            quiet_hours_start_min: value.quiet_hours_start_min as i32,
+            quiet_hours_end_min: value.quiet_hours_end_min as i32,
+            deactivated_at: value.deactivated_at,
             created_at: value.created_at,
             updated_at: value.updated_at,
         })
@@ -256,6 +296,58 @@ impl TryFrom<CommentRow> for TaskComment {
     }
 }
 
+impl TryFrom<AdminAuditLogRow> for AdminAuditEntry {
+    type Error = AppError;
+
+    fn try_from(value: AdminAuditLogRow) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: Some(value.id),
+            actor_user_id: value.actor_user_id,
+            target_user_id: value.target_user_id,
+            action_code: parse_audit_action_code(&value.action_code)?,
+            metadata: serde_json::from_str::<Value>(&value.metadata)
+                .map_err(|error| invalid_row("metadata", error.to_string()))?,
+            created_at: value.created_at,
+        })
+    }
+}
+
+impl TryFrom<SecurityAuditLogRow> for SecurityAuditEntry {
+    type Error = AppError;
+
+    fn try_from(value: SecurityAuditLogRow) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: Some(value.id),
+            actor_user_id: value.actor_user_id,
+            telegram_id: value.telegram_id,
+            event_code: parse_audit_action_code(&value.event_code)?,
+            metadata: serde_json::from_str::<Value>(&value.metadata)
+                .map_err(|error| invalid_row("metadata", error.to_string()))?,
+            created_at: value.created_at,
+        })
+    }
+}
+
+fn parse_audit_action_code(value: &str) -> AppResult<AuditActionCode> {
+    match value {
+        "user_onboarding_started" => Ok(AuditActionCode::UserOnboardingStarted),
+        "user_onboarding_completed" => Ok(AuditActionCode::UserOnboardingCompleted),
+        "user_onboarding_abandoned" => Ok(AuditActionCode::UserOnboardingAbandoned),
+        "user_employee_linked" => Ok(AuditActionCode::UserEmployeeLinked),
+        "user_employee_unlinked" => Ok(AuditActionCode::UserEmployeeUnlinked),
+        "role_elevated_by_bootstrap" => Ok(AuditActionCode::RoleElevatedByBootstrap),
+        "role_changed_by_admin" => Ok(AuditActionCode::RoleChangedByAdmin),
+        "user_deactivated_by_admin" => Ok(AuditActionCode::UserDeactivatedByAdmin),
+        "user_reactivated_by_admin" => Ok(AuditActionCode::UserReactivatedByAdmin),
+        "admin_feature_toggled" => Ok(AuditActionCode::AdminFeatureToggled),
+        "forbidden_action_attempted" => Ok(AuditActionCode::ForbiddenActionAttempted),
+        "callback_authorship_violation" => Ok(AuditActionCode::CallbackAuthorshipViolation),
+        "rate_limit_exceeded" => Ok(AuditActionCode::RateLimitExceeded),
+        "admin_nonce_expired" => Ok(AuditActionCode::AdminNonceExpired),
+        _ => Err(invalid_row("audit_action_code", value)),
+    }
+}
+
 fn parse_json_array(payload: &str, field: &'static str) -> AppResult<Vec<String>> {
     serde_json::from_str::<Vec<String>>(payload)
         .map_err(|error| invalid_row(field, error.to_string()))
@@ -311,6 +403,7 @@ fn parse_notification_type(value: &str) -> AppResult<NotificationType> {
         "task_review_requested" => Ok(NotificationType::TaskReviewRequested),
         "task_blocked" => Ok(NotificationType::TaskBlocked),
         "daily_summary" => Ok(NotificationType::DailySummary),
+        "sla_escalation" => Ok(NotificationType::SlaEscalation),
         _ => Err(invalid_row("notification_type", value)),
     }
 }

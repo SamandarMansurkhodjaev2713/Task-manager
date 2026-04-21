@@ -1,9 +1,13 @@
+# Set `GIT_SHA` when building so `/version` matches the deployed revision, e.g.
+#   $env:GIT_SHA = (git rev-parse HEAD); docker compose build
 services:
   telegram-task-bot:
     build:
       context: .
       dockerfile: Dockerfile
       target: runtime
+      args:
+        GIT_SHA: ${GIT_SHA:-unknown}
     env_file:
       - .env
     environment:
@@ -42,6 +46,8 @@ services:
       context: .
       dockerfile: Dockerfile
       target: test-runner
+      args:
+        GIT_SHA: ${GIT_SHA:-unknown}
     working_dir: /app
     environment:
       TELEGRAM_BOT_TOKEN: test_token
@@ -52,6 +58,8 @@ services:
       OPENAI_API_KEY: test_key
       DATABASE_URL: sqlite:///tmp/tests.db
       RUST_BACKTRACE: "1"
+      # Match `.env.example` defaults so integration tests see the same flag baseline as production.
+      FEATURE_FLAGS: onboarding_v2,admin_panel
     command: ["cargo", "test", "--workspace", "-j", "1"]
     restart: "no"
 
@@ -66,7 +74,7 @@ services:
       [
         "sh",
         "-c",
-        "curl -fsS http://telegram-task-bot:8080/healthz && curl -fsS http://telegram-task-bot:8080/metrics >/dev/null",
+        "set -eu; curl -fsS http://telegram-task-bot:8080/healthz >/dev/null; curl -fsS http://telegram-task-bot:8080/healthz/deep >/dev/null; curl -fsS http://telegram-task-bot:8080/metrics >/dev/null; curl -fsS http://telegram-task-bot:8080/version | grep -q '\"version\":\"';",
       ]
     restart: "no"
 

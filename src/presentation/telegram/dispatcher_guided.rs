@@ -27,6 +27,7 @@ use teloxide::types::ChatId;
 use teloxide::Bot;
 
 use crate::application::dto::task_views::TaskCreationOutcome;
+use crate::application::use_cases::create_task_from_message::TaskAssigneeDecision;
 use crate::domain::message::{IncomingMessage, MessageContent};
 use crate::domain::user::User;
 use crate::presentation::telegram::active_screens::ScreenDescriptor;
@@ -95,6 +96,40 @@ impl<'a> GuidedCreateCoordinator<'a> {
             ScreenDescriptor::GuidedStep(GuidedTaskStep::Assignee),
             &ui::guided_assignee_prompt(),
             ui::guided_assignee_keyboard(),
+        )
+        .await
+    }
+
+    /// Confirms a specific employee during the guided Assignee step.
+    ///
+    /// Called when the user clicks a candidate button on the
+    /// `GuidedAssigneeOptions` screen.  Stores the employee ID in the draft
+    /// and advances to Description without re-running any fuzzy matching.
+    pub async fn confirm_assignee(
+        &self,
+        chat_id: ChatId,
+        employee_id: i64,
+    ) -> Result<(), teloxide::RequestError> {
+        let Some(CreationSession::Guided(mut draft)) =
+            self.state.creation_sessions.get(chat_id.0).await
+        else {
+            return self.fallback_to_create_menu(chat_id).await;
+        };
+
+        draft.resolved_employee_id = Some(employee_id);
+        draft.step = GuidedTaskStep::Description;
+        self.state
+            .creation_sessions
+            .update_guided(chat_id.0, draft)
+            .await;
+
+        send_screen(
+            self.bot,
+            self.state,
+            chat_id,
+            ScreenDescriptor::GuidedStep(GuidedTaskStep::Description),
+            &ui::guided_description_prompt(),
+            ui::create_menu_keyboard(),
         )
         .await
     }
@@ -273,12 +308,29 @@ impl<'a> GuidedCreateCoordinator<'a> {
         };
 
         let synthetic_message = build_guided_message(chat_id.0, actor, &draft, description);
-        match self
-            .state
-            .create_task_use_case
-            .execute(synthetic_message.clone())
-            .await
-        {
+        // When the assignee was pre-resolved during the Assignee step, skip
+        // the fuzzy matcher entirely by passing the confirmed employee ID.
+        // This prevents re-parsing the raw input text (which may be an
+        // abbreviation that the regex/Levenshtein path cannot handle), and
+        // guarantees no silent wrong assignment.
+        let creation_result = match draft.resolved_employee_id {
+            Some(employee_id) => {
+                self.state
+                    .create_task_use_case
+                    .execute_with_assignee_decision(
+                        synthetic_message.clone(),
+                        TaskAssigneeDecision::EmployeeId(employee_id),
+                    )
+                    .await
+            }
+            None => {
+                self.state
+                    .create_task_use_case
+                    .execute(synthetic_message.clone())
+                    .await
+            }
+        };
+        match creation_result {
             Ok(outcome @ TaskCreationOutcome::Created(_))
             | Ok(outcome @ TaskCreationOutcome::DuplicateFound(_)) => {
                 self.state.creation_sessions.clear(chat_id.0).await;
@@ -315,7 +367,7 @@ impl<'a> GuidedCreateCoordinator<'a> {
                 )
                 .await
             }
-            Err(error) => send_error(self.bot, chat_id.0, error).await,
+            Err(error) => send_error(self.bot, self.state, chat_id.0, error).await,
         }
     }
 
@@ -363,7 +415,7 @@ impl<'a> GuidedCreateCoordinator<'a> {
                 )
                 .await
             }
-            Err(error) => send_error(self.bot, chat_id.0, error).await,
+            Err(error) => send_error(self.bot, self.state, chat_id.0, error).await,
         }
     }
 
@@ -484,5 +536,16 @@ pub(crate) async fn create_task_and_present(
 ) -> Result<(), teloxide::RequestError> {
     GuidedCreateCoordinator::new(bot, state)
         .create_and_present(chat_id, incoming_message, session_completion)
+        .await
+}
+
+pub(crate) async fn confirm_guided_assignee(
+    bot: &Bot,
+    state: &TelegramRuntime,
+    chat_id: ChatId,
+    employee_id: i64,
+) -> Result<(), teloxide::RequestError> {
+    GuidedCreateCoordinator::new(bot, state)
+        .confirm_assignee(chat_id, employee_id)
         .await
 }

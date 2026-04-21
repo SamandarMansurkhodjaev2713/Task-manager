@@ -106,6 +106,12 @@ fn build_keyboard(
             )]]
         }
         NotificationType::DailySummary => return None,
+        // SLA escalation notifications link directly to the task card so the
+        // assignee can update the status from the notification itself.
+        NotificationType::SlaEscalation => vec![vec![callback_button(
+            OPEN_TASK_LABEL,
+            open_callback(task_uid),
+        )]],
     };
 
     Some(InlineKeyboardMarkup::new(rows))

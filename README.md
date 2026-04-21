@@ -18,7 +18,12 @@ Production-oriented Telegram bot for task intake, assignment, review, blockers, 
 - Compact and expanded task cards with highlighted next action
 - Personal `Мой фокус` screen and manager `Inbox менеджера`
 - Edit-in-place screen navigation for menu, lists, task cards, confirmations, and wizard flows
-- Health and metrics endpoints
+- Onboarding v2: persistent FSM with first/last name capture before any other flow
+- RBAC (user / manager / admin) with last-admin protection, `.env` bootstrap, and in-Telegram `/admin` panel
+- Admin panel with users list, role changes, deactivate/reactivate, audit log, and feature-flag view — all destructive actions require a short-TTL nonce confirmation
+- Task search skeleton (`/find`) against the caller's assigned tasks
+- Personal activity block inlined into the profile screen
+- Health, deep-health, metrics and version endpoints
 
 ## Main product flows
 
@@ -77,15 +82,54 @@ Telegram bots cannot initiate a private chat by `@username` alone. The bot store
 - `/team_tasks [cursor]`
 - `/status <T-0001|task_uid>`
 - `/cancel_task <T-0001|task_uid>`
+- `/find <запрос>`
 - `/stats`
 - `/team_stats`
 - `/settings`
+- `/admin` (admin only — in-Telegram admin panel)
 - `/admin_sync_employees`
 
 ## HTTP endpoints
 
-- `GET /healthz`
-- `GET /metrics`
+- `GET /healthz` — liveness (no DB calls)
+- `GET /healthz/deep` — readiness with `SELECT 1` probe
+- `GET /metrics` — Prometheus text format
+- `GET /version` — build metadata (name, version, git sha, profile, rustc)
+
+## Roles and permissions (RBAC)
+
+Roles are assigned in the `users.role` column and enforced by
+`RoleAuthorizationPolicy`.  The full matrix of permitted actions per role:
+
+| Capability                                   | user | manager | admin |
+| -------------------------------------------- | :--: | :-----: | :---: |
+| Create / assign / comment on own tasks        | ✔    | ✔       | ✔     |
+| Claim / resolve review                        | ✔    | ✔       | ✔     |
+| See own `/my_tasks`, `/created_tasks`         | ✔    | ✔       | ✔     |
+| See team tasks (`/team_tasks`, `/team_stats`) |      | ✔       | ✔     |
+| Reassign someone else's task                  |      | ✔       | ✔     |
+| Manager inbox (`Inbox менеджера`)             |      | ✔       | ✔     |
+| Trigger `/admin_sync_employees`               |      | ✔       | ✔     |
+| Open `/admin` panel                           |      |         | ✔     |
+| Change another user's role                    |      |         | ✔     |
+| Deactivate / reactivate another user          |      |         | ✔     |
+| Toggle feature flags at runtime               |      |         | ✔     |
+
+Invariants:
+
+- **Last-admin protection**: the repository refuses to demote or
+  deactivate the last remaining active admin, so the system can never
+  lock itself out of role management.
+- **Self-target guard**: admins cannot change their own role or
+  deactivate themselves via `/admin`.
+- **Nonce-confirmed mutations**: every destructive admin action issues a
+  short-lived single-use nonce bound to the acting admin.  Expired or
+  reused nonces are rejected with a dedicated error.
+- **Audit trail**: role changes and (de)activations are persisted to
+  `admin_audit_log`; RBAC denials are persisted to `security_audit_log`.
+- **Bootstrap**: the `.env` `TELEGRAM_ADMIN_IDS` list is *additive* and
+  promotion-only.  Removing an ID from `.env` does not demote; use the
+  `/admin` panel so the last-admin invariant is still enforced.
 
 ## Documentation
 

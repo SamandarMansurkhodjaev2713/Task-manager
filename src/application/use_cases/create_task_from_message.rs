@@ -6,8 +6,8 @@ use serde_json::json;
 use tracing::instrument;
 
 use crate::application::dto::task_views::{
-    AssigneeInterpretation, DeliveryStatus, TaskCreationOutcome, TaskCreationSummary,
-    TaskInterpretationPreview,
+    format_task_body_preview_for_clarification, AssigneeInterpretation, DeliveryStatus,
+    TaskCreationOutcome, TaskCreationSummary, TaskInterpretationPreview,
 };
 use crate::application::ports::repositories::{
     AuditLogRepository, NotificationRepository, PersistedTask, TaskRepository, UserRepository,
@@ -17,12 +17,13 @@ use crate::application::use_cases::assignee_resolution::{
     AssigneeResolution, AssigneeResolver, ResolvedAssignee,
 };
 use crate::domain::audit::{AuditAction, AuditLogEntry};
+use crate::domain::deadline::{Deadline, DeadlineInput, DeadlineResolver};
 use crate::domain::errors::{AppError, AppResult};
 use crate::domain::message::{IncomingMessage, MessageContent};
 use crate::domain::notification::{Notification, NotificationDeliveryState, NotificationType};
 use crate::domain::parsing::parse_task_request;
 use crate::domain::task::{MessageType, Task, TaskStatus};
-use crate::domain::user::{User, UserRole};
+use crate::domain::user::{User, UserRole, DEFAULT_USER_TIMEZONE};
 use crate::shared::task_codes::format_public_task_code_or_placeholder;
 
 pub struct CreateTaskFromMessageUseCase {
@@ -96,7 +97,11 @@ impl CreateTaskFromMessageUseCase {
                 let ResolvedAssignee { user, employee } = *resolved;
                 (user, employee)
             }
-            AssigneeResolution::ClarificationRequired(request) => {
+            AssigneeResolution::ClarificationRequired(mut request) => {
+                request.task_body_preview = Some(format_task_body_preview_for_clarification(
+                    &parsed_request.task_description,
+                    &original_text,
+                ));
                 return Ok(TaskCreationOutcome::ClarificationRequired(request));
             }
         };
@@ -105,14 +110,28 @@ impl CreateTaskFromMessageUseCase {
             .task_generator
             .generate_task(&parsed_request, assignee_employee.as_ref())
             .await?;
+
+        // Resolve the deadline *after* we have the AI's structured output
+        // so we can feed its `deadline_iso` hint into the kernel.  The
+        // kernel validates the hint (format, non-past) and falls back to
+        // the deterministic parser if anything looks wrong.
+        let deadline = self.resolve_deadline(
+            &original_text,
+            &creator,
+            generated_task.structured_task.deadline_iso.as_deref(),
+        );
+
         let task = Task::new(
             message.source_message_key(),
             required_user_id(&creator)?,
             assignee_user.as_ref().and_then(|user| user.id),
             assignee_employee.as_ref().and_then(|employee| employee.id),
             generated_task.structured_task,
-            parsed_request.deadline,
-            parsed_request.deadline_raw.clone(),
+            deadline.local_date.or(parsed_request.deadline),
+            deadline
+                .raw_fragment
+                .clone()
+                .or_else(|| parsed_request.deadline_raw.clone()),
             original_text,
             task_message_type(&message.content, message.is_voice_origin),
             generated_task.model_name,
@@ -160,6 +179,27 @@ impl CreateTaskFromMessageUseCase {
         ))
     }
 
+    /// Resolves a free-text assignee query without creating a task.
+    ///
+    /// Used by the guided-creation wizard to surface suggestions (or an
+    /// ambiguity screen) immediately after the user types an assignee name —
+    /// before they advance to the next step.  Keeps the presentation layer
+    /// ignorant of `AssigneeResolver` internals.
+    ///
+    /// An empty or whitespace-only `query` is treated as "no assignee" and
+    /// returns `Resolved(employee: None)` — same contract as submitting the
+    /// task with no assignee query.
+    pub async fn preview_assignee_resolution(&self, query: &str) -> AppResult<AssigneeResolution> {
+        let trimmed = query.trim();
+        if trimmed.is_empty() {
+            return Ok(AssigneeResolution::Resolved(Box::new(ResolvedAssignee {
+                user: None,
+                employee: None,
+            })));
+        }
+        self.assignee_resolver.resolve_for_creation(trimmed).await
+    }
+
     pub async fn transcribe_voice_message(&self, message: &IncomingMessage) -> AppResult<String> {
         match &message.content {
             MessageContent::Voice { voice } => self.speech_to_text_service.transcribe(voice).await,
@@ -183,15 +223,50 @@ impl CreateTaskFromMessageUseCase {
         self.user_repository.upsert_from_message(&user).await
     }
 
+    /// Run the unified deadline kernel with the creator's timezone.
+    /// `ai_iso_hint` comes from the structured AI response (field
+    /// `deadline_iso` — see `SYSTEM_PROMPT`).  The kernel enforces
+    /// format, non-past-instant, and timezone normalisation in one place.
+    /// Returns [`Deadline::none`] when no due date was detected.
+    fn resolve_deadline(
+        &self,
+        original_text: &str,
+        creator: &User,
+        ai_iso_hint: Option<&str>,
+    ) -> Deadline {
+        let timezone = creator
+            .timezone
+            .parse::<chrono_tz::Tz>()
+            .or_else(|_| DEFAULT_USER_TIMEZONE.parse::<chrono_tz::Tz>())
+            .unwrap_or(chrono_tz::UTC);
+        DeadlineResolver::resolve(DeadlineInput {
+            text: original_text,
+            ai_iso_hint,
+            user_timezone: timezone,
+            now_utc: self.clock.now_utc(),
+            calendar: None,
+        })
+        .unwrap_or_else(|_| Deadline::none())
+    }
+
     pub async fn preview_interpretation(
         &self,
         message: &IncomingMessage,
     ) -> AppResult<TaskInterpretationPreview> {
         let original_text = self.extract_original_text(message).await?;
         let parsed_request = parse_task_request(&original_text, self.clock.today_utc())?;
-        let deadline_label = parsed_request
-            .deadline
-            .map(|value| value.format("%d.%m.%Y").to_string());
+        // Use the unified deadline kernel so the preview agrees with the
+        // eventual `execute()` path on how we spell "до пятницы" → Friday
+        // EOB and how we treat noisy AI timestamps.  The preview does not
+        // call the AI (it is voice-transcript-only), so no ISO hint is
+        // available at this stage.
+        let creator_for_preview = User::from_message(message, UserRole::User, false);
+        let deadline = self.resolve_deadline(&original_text, &creator_for_preview, None);
+        let deadline_label = deadline.local_label().or_else(|| {
+            parsed_request
+                .deadline
+                .map(|value| value.format("%d.%m.%Y").to_string())
+        });
 
         let assignee = if parsed_request.explicit_unassigned
             || parsed_request.assignee_name.as_deref().is_none()

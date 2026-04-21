@@ -133,7 +133,7 @@ pub(crate) async fn handle_task_interaction_message(
                     )
                     .await
                 }
-                Err(error) => send_error(bot, chat_id.0, error).await,
+                Err(error) => send_error(bot, state, chat_id.0, error).await,
             }
         }
         TaskInteractionKind::Blocker => {
@@ -158,7 +158,7 @@ pub(crate) async fn handle_task_interaction_message(
                     )
                     .await
                 }
-                Err(error) => send_error(bot, chat_id.0, error).await,
+                Err(error) => send_error(bot, state, chat_id.0, error).await,
             }
         }
         TaskInteractionKind::Reassign => {
@@ -211,7 +211,7 @@ pub(crate) async fn handle_task_interaction_message(
                     )
                     .await
                 }
-                Err(error) => send_error(bot, chat_id.0, error).await,
+                Err(error) => send_error(bot, state, chat_id.0, error).await,
             }
         }
     }
@@ -263,7 +263,7 @@ async fn start_task_interaction(
             )
             .await
         }
-        Err(error) => send_error(bot, chat_id.0, error).await,
+        Err(error) => send_error(bot, state, chat_id.0, error).await,
     }
 }
 
@@ -301,7 +301,7 @@ async fn show_prompt_again(
             )
             .await
         }
-        Err(error) => send_error(bot, chat_id.0, error).await,
+        Err(error) => send_error(bot, state, chat_id.0, error).await,
     }
 }
 

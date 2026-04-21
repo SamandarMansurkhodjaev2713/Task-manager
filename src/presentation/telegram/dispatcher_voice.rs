@@ -22,6 +22,7 @@ use crate::application::dto::task_views::TaskCreationOutcome;
 use crate::domain::errors::AppError;
 use crate::domain::message::{IncomingMessage, MessageContent};
 use crate::domain::user::User;
+use crate::domain::voice_transcript::NormalizedTranscript;
 use crate::presentation::telegram::active_screens::ScreenDescriptor;
 use crate::presentation::telegram::drafts::{CreationSession, VoiceTaskDraft, VoiceTaskStep};
 use crate::presentation::telegram::ui;
@@ -86,10 +87,22 @@ impl<'a> VoiceCreateCoordinator<'a> {
             .transcribe_voice_message(&incoming_message)
             .await
         {
-            Ok(transcript) => {
-                let normalized = transcript.trim().to_owned();
-                if normalized.is_empty() {
-                    return send_screen(
+            Ok(transcript) => match NormalizedTranscript::from_raw(&transcript) {
+                Ok(normalised) => {
+                    let mut draft = VoiceTaskDraft::new(
+                        incoming_message.source_message_key(),
+                        normalised.text.clone(),
+                    );
+                    draft = draft.with_truncation(normalised.truncated);
+                    self.state
+                        .creation_sessions
+                        .set_voice(chat_id.0, draft.clone())
+                        .await;
+                    self.state.assignee_selections.clear(chat_id.0).await;
+                    self.show_confirmation(actor, chat_id, &draft, None).await
+                }
+                Err(_) => {
+                    send_screen(
                         self.bot,
                         self.state,
                         chat_id,
@@ -97,17 +110,9 @@ impl<'a> VoiceCreateCoordinator<'a> {
                         VOICE_EMPTY_TRANSCRIPT_MESSAGE,
                         ui::create_menu_keyboard(),
                     )
-                    .await;
+                    .await
                 }
-
-                let draft = VoiceTaskDraft::new(incoming_message.source_message_key(), normalized);
-                self.state
-                    .creation_sessions
-                    .set_voice(chat_id.0, draft.clone())
-                    .await;
-                self.state.assignee_selections.clear(chat_id.0).await;
-                self.show_confirmation(actor, chat_id, &draft, None).await
-            }
+            },
             Err(error) => {
                 send_screen(
                     self.bot,
@@ -292,7 +297,7 @@ impl<'a> VoiceCreateCoordinator<'a> {
                 )
                 .await
             }
-            Err(error) => send_error(self.bot, chat_id.0, error).await,
+            Err(error) => send_error(self.bot, self.state, chat_id.0, error).await,
         }
     }
 
@@ -306,10 +311,21 @@ impl<'a> VoiceCreateCoordinator<'a> {
         notice: Option<&str>,
     ) -> Result<(), teloxide::RequestError> {
         let base = self.build_confirmation_body(actor, chat_id, draft).await;
-        let text = match notice {
-            Some(n) => format!("{n}\n\n{base}"),
-            None => base,
-        };
+        let mut sections: Vec<String> = Vec::new();
+        if let Some(n) = notice {
+            sections.push(n.to_owned());
+        }
+        if draft.truncated {
+            // Surface the truncation explicitly — every time the draft is
+            // rendered while in the clipped state — so the user cannot miss it.
+            sections.push(
+                "⚠️ Голосовое оказалось длинным, я использовал только начало. \
+                 Проверьте, что все важные детали сохранились, или запишите заново."
+                    .to_owned(),
+            );
+        }
+        sections.push(base);
+        let text = sections.join("\n\n");
         send_screen(
             self.bot,
             self.state,
@@ -362,7 +378,7 @@ impl<'a> VoiceCreateCoordinator<'a> {
             .preview_interpretation(&preview_message)
             .await
         {
-            Ok(preview) => ui::voice_interpretation_text(&preview),
+            Ok(preview) => ui::voice_interpretation_text(&draft.transcript, &preview),
             Err(_) => ui::voice_confirmation_text(&draft.transcript),
         }
     }
@@ -442,7 +458,10 @@ fn task_uid_from_outcome(outcome: &TaskCreationOutcome) -> uuid::Uuid {
 #[cfg(test)]
 mod tests {
     use super::build_voice_message;
-    use crate::domain::user::{User, UserRole};
+    use crate::domain::user::{
+        OnboardingState, User, UserRole, DEFAULT_QUIET_HOURS_END_MIN,
+        DEFAULT_QUIET_HOURS_START_MIN, DEFAULT_USER_TIMEZONE,
+    };
     use crate::presentation::telegram::drafts::VoiceTaskDraft;
 
     #[test]
@@ -453,9 +472,17 @@ mod tests {
             last_chat_id: Some(44),
             telegram_username: Some("leader".to_owned()),
             full_name: Some("Team Lead".to_owned()),
+            first_name: Some("Team".to_owned()),
+            last_name: Some("Lead".to_owned()),
             linked_employee_id: Some(11),
             is_employee: true,
             role: UserRole::User,
+            onboarding_state: OnboardingState::Completed,
+            onboarding_version: 0,
+            timezone: DEFAULT_USER_TIMEZONE.to_owned(),
+            quiet_hours_start_min: DEFAULT_QUIET_HOURS_START_MIN,
+            quiet_hours_end_min: DEFAULT_QUIET_HOURS_END_MIN,
+            deactivated_at: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
         };

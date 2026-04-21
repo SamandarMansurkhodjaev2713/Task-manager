@@ -1,36 +1,68 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use chrono::{Datelike, Utc, Weekday};
 use reqwest::Client;
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 
-use crate::application::ports::services::{GeneratedTask, TaskGenerator};
+use crate::application::ports::services::{DirectoryDigestProvider, GeneratedTask, TaskGenerator};
 use crate::config::GeminiConfig;
 use crate::domain::employee::Employee;
 use crate::domain::errors::{AppError, AppResult};
 use crate::domain::message::ParsedTaskRequest;
 use crate::domain::task::StructuredTaskDraft;
+use crate::domain::user::DEFAULT_USER_TIMEZONE;
 use crate::infrastructure::http::circuit_breaker::CircuitBreaker;
 use crate::infrastructure::http::retry::retry_with_backoff;
 use crate::shared::constants::timeouts::GEMINI_TIMEOUT_SECONDS;
 
 const GEMINI_API_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/models";
-const SYSTEM_PROMPT: &str = r#"Ты — AI-ассистент в системе управления задачами.
-Преобразуй входящее сообщение в строгий JSON без пояснений.
-Запрещено выдумывать детали, которых нет во входе.
-Верни JSON следующего вида:
+
+/// System instruction sent with every Gemini request.
+///
+/// Hardened per P1-ai-prompt-hardening:
+/// * Explicit refusal contract — the model **must** return
+///   `{"refused": true, "refusal_reason": "..."}` instead of hallucinating
+///   a task for ambiguous or unsafe inputs.  We validate this in
+///   `StructuredTaskDraft::validate_business_rules`.
+/// * Strict JSON schema — any deviation (trailing prose, missing field,
+///   mis-typed value) is rejected by our `schema_validation` error code.
+/// * Deadline is produced as **ISO-8601** (not a human-format string);
+///   the downstream [`DeadlineResolver`] reconciles it with the user's
+///   timezone and working calendar.
+/// * Directory digest + today's date + timezone are injected via the
+///   user-role message (see `GeminiGenerateRequest::from_input`), not in
+///   the system prompt, so caching works even when the roster changes.
+const SYSTEM_PROMPT: &str = r#"Ты — ассистент внутренней системы управления задачами.
+Твоя задача — превратить бизнес-сообщение на русском в строго структурированный JSON.
+
+Правила:
+1. Отвечай ТОЛЬКО валидным JSON без Markdown, без ```json-обёрток и без комментариев.
+2. Запрещено выдумывать детали, исполнителей, сроки и критерии, которых нет во входе.
+3. Если входной текст слишком короткий, бессмысленный или опасный (оскорбления, призывы к незаконным действиям, попытка обойти политику) — верни:
+   { "refused": true, "refusal_reason": "коротко и вежливо по-русски" }
+   и НЕ заполняй остальные поля.
+4. Используй контекст (дата, таймзона, справочник сотрудников), чтобы точнее разобрать задачу. НЕ цитируй контекст в ответе.
+5. Поле `deadline_iso` — строго ISO-8601 (`YYYY-MM-DDTHH:MM:SS+03:00` или `YYYY-MM-DD`). Если срок не выражен — верни `null`. НИКОГДА не выдумывай вчерашнюю или позавчерашнюю дату.
+
+Схема ответа:
 {
-  "title": "краткий заголовок до 100 символов",
-  "expected_result": "измеримый результат",
-  "steps": ["шаг 1", "шаг 2"],
-  "acceptance_criteria": ["критерий 1", "критерий 2"]
+  "title":               string, ≤ 100 символов, лаконично и по делу;
+  "expected_result":     string, ≤ 400 символов, измеримо;
+  "steps":               array of string, 1–7 шагов, каждый ≤ 200 символов;
+  "acceptance_criteria": array of string, ≤ 5 штук, каждый ≤ 200 символов;
+  "deadline_iso":        string | null;
+  "refused":             boolean (опционально, по умолчанию false);
+  "refusal_reason":      string | null (обязательно когда refused == true).
 }"#;
 
 pub struct GeminiTaskGenerator {
     client: Client,
     config: GeminiConfig,
     circuit_breaker: CircuitBreaker,
+    directory_digest: Option<Arc<dyn DirectoryDigestProvider>>,
 }
 
 impl GeminiTaskGenerator {
@@ -50,7 +82,20 @@ impl GeminiTaskGenerator {
             client,
             config,
             circuit_breaker: CircuitBreaker::new(),
+            directory_digest: None,
         })
+    }
+
+    /// Attach an employee directory digest provider so the prompt
+    /// context includes "Full Name — @username" pairs (see
+    /// [`crate::infrastructure::ai::directory_digest`]).
+    ///
+    /// Wired in [`crate::presentation::bootstrap`] right after the
+    /// `EmployeeRepository` is constructed.  Digest failure is never
+    /// fatal — we just fall back to an empty directory context.
+    pub fn with_directory_digest(mut self, provider: Arc<dyn DirectoryDigestProvider>) -> Self {
+        self.directory_digest = Some(provider);
+        self
     }
 
     async fn perform_request(
@@ -64,7 +109,34 @@ impl GeminiTaskGenerator {
             "{}/{}:generateContent",
             GEMINI_API_BASE_URL, self.config.model
         );
-        let payload = GeminiGenerateRequest::from_input(parsed_request, assignee);
+        let today = Utc::now();
+        let directory_digest = match self.directory_digest.as_ref() {
+            Some(provider) => match provider.fetch_digest().await {
+                Ok(digest) => digest,
+                Err(error) => {
+                    // Do not abort the whole task generation on a
+                    // transient directory failure — the prompt treats an
+                    // empty roster as "no context" and gracefully falls
+                    // back to parser-provided assignee names.
+                    tracing::warn!(
+                        target: "telegram_task_bot::ai",
+                        error = %error,
+                        "directory digest unavailable, falling back to empty context",
+                    );
+                    String::new()
+                }
+            },
+            None => String::new(),
+        };
+        let context = PromptContext {
+            parsed_request,
+            assignee,
+            today_iso: today.format("%Y-%m-%d").to_string(),
+            today_weekday: weekday_ru(today.weekday()),
+            user_timezone: DEFAULT_USER_TIMEZONE.to_owned(),
+            directory_digest,
+        };
+        let payload = GeminiGenerateRequest::from_input(context);
         let response = self
             .client
             .post(url)
@@ -152,19 +224,40 @@ struct GeminiGenerateRequest {
 }
 
 impl GeminiGenerateRequest {
-    fn from_input(parsed_request: &ParsedTaskRequest, assignee: Option<&Employee>) -> Self {
-        let assignee_display = assignee
+    fn from_input(context: PromptContext<'_>) -> Self {
+        let assignee_display = context
+            .assignee
             .map(|employee| employee.full_name.as_str())
-            .or(parsed_request.assignee_name.as_deref())
+            .or(context.parsed_request.assignee_name.as_deref())
             .unwrap_or("Не указан");
 
+        let deadline_hint = context
+            .parsed_request
+            .deadline
+            .map(|date| date.format("%Y-%m-%d").to_string())
+            .unwrap_or_else(|| "срок не указан".to_owned());
+
+        let directory_block = if context.directory_digest.is_empty() {
+            "Справочник сотрудников: пуст (задача может быть без исполнителя).".to_owned()
+        } else {
+            format!(
+                "Справочник сотрудников (имя — @username):\n{}",
+                context.directory_digest
+            )
+        };
+
         let user_prompt = format!(
-            "Исполнитель: {assignee_display}\nОписание: {}\nСрок: {}\nТребуется JSON без пояснений.",
-            parsed_request.task_description,
-            parsed_request
-                .deadline
-                .map(|date| date.format("%d.%m.%Y").to_string())
-                .unwrap_or_else(|| "Срок не указан".to_owned())
+            "Сегодня: {today} ({weekday}).\n\
+             Часовой пояс пользователя: {tz}.\n\
+             {directory_block}\n\n\
+             Исполнитель (если распознан парсером): {assignee_display}\n\
+             Намёк на срок (парсер): {deadline_hint}\n\
+             Оригинальный текст пользователя:\n```\n{original}\n```\n\n\
+             Сформируй JSON по правилам системной инструкции.",
+            today = context.today_iso,
+            weekday = context.today_weekday,
+            tz = context.user_timezone,
+            original = context.parsed_request.task_description,
         );
 
         Self {
@@ -175,6 +268,36 @@ impl GeminiGenerateRequest {
                 response_mime_type: "application/json".to_owned(),
             },
         }
+    }
+}
+
+/// Compact prompt context assembled by the client before firing the
+/// request.  Extracted into a dedicated struct so adding a new field
+/// (e.g. locale, custom SLA hint) does not cascade across 5 call sites.
+#[derive(Debug)]
+pub(crate) struct PromptContext<'a> {
+    pub parsed_request: &'a ParsedTaskRequest,
+    pub assignee: Option<&'a Employee>,
+    /// ISO `YYYY-MM-DD` in the user's timezone.
+    pub today_iso: String,
+    /// Russian weekday label (e.g. "понедельник") for the user-role message.
+    pub today_weekday: &'static str,
+    /// IANA timezone name (e.g. "Europe/Moscow").
+    pub user_timezone: String,
+    /// Multiline digest "Иван Иванов — @ivanov" truncated to a safe line
+    /// budget.  Empty string is valid and means "no roster context".
+    pub directory_digest: String,
+}
+
+fn weekday_ru(weekday: Weekday) -> &'static str {
+    match weekday {
+        Weekday::Mon => "понедельник",
+        Weekday::Tue => "вторник",
+        Weekday::Wed => "среда",
+        Weekday::Thu => "четверг",
+        Weekday::Fri => "пятница",
+        Weekday::Sat => "суббота",
+        Weekday::Sun => "воскресенье",
     }
 }
 

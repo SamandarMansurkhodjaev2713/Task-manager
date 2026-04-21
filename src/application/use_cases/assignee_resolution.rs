@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use crate::application::dto::task_views::{ClarificationRequest, EmployeeCandidateView};
 use crate::application::ports::repositories::{EmployeeRepository, UserRepository};
-use crate::domain::employee::{Employee, EmployeeMatchOutcome};
+use crate::domain::employee::Employee;
 use crate::domain::errors::AppResult;
-use crate::domain::name_matching::match_employee_name;
+use crate::domain::name_matching::{match_employee_name, rank_outcome, RankedOutcome};
 use crate::domain::user::User;
 
 pub struct AssigneeResolver {
@@ -75,9 +75,10 @@ impl AssigneeResolver {
         }
 
         let employees = self.employee_repository.list_active().await?;
-        let employee_match = match_employee_name(normalized_query, &employees);
-        match employee_match {
-            EmployeeMatchOutcome::Unique(candidate) => {
+        let raw_outcome = match_employee_name(normalized_query, &employees);
+        let ranked = rank_outcome(raw_outcome);
+        match ranked {
+            RankedOutcome::Unique(candidate) => {
                 let employee = candidate.employee;
                 let user =
                     resolve_user_from_employee(self.user_repository.as_ref(), &employee).await?;
@@ -86,7 +87,22 @@ impl AssigneeResolver {
                     employee: Some(employee),
                 })));
             }
-            EmployeeMatchOutcome::Ambiguous(candidates) => {
+            RankedOutcome::Suggested(top, rest) => {
+                // Prefilled clarification: top suggestion first, alternatives
+                // after.  We deliberately show the user a single pre-selected
+                // option so the click cost is one tap for the common case.
+                let mut candidates = vec![EmployeeCandidateView::from_match(&top)];
+                candidates.extend(rest.iter().map(EmployeeCandidateView::from_match));
+                return Ok(AssigneeResolution::ClarificationRequired(
+                    clarification_request(
+                        normalized_query,
+                        purpose,
+                        suggested_message(&top.employee.full_name),
+                        candidates,
+                    ),
+                ));
+            }
+            RankedOutcome::Ambiguous(candidates) => {
                 return Ok(AssigneeResolution::ClarificationRequired(
                     clarification_request(
                         normalized_query,
@@ -99,7 +115,7 @@ impl AssigneeResolver {
                     ),
                 ));
             }
-            EmployeeMatchOutcome::NotFound => {}
+            RankedOutcome::NotFound => {}
         }
 
         if looks_like_username(normalized_query) {
@@ -158,6 +174,7 @@ fn clarification_request(
         requested_query: Some(normalized_query.to_owned()),
         allow_unassigned: matches!(purpose, AssigneeResolutionPurpose::TaskCreation),
         candidates,
+        task_body_preview: None,
     }
 }
 
@@ -167,6 +184,16 @@ fn clarification_message(query: &str) -> &'static str {
     }
 
     "С этим именем есть несколько сотрудников. Выберите точного исполнителя явно, чтобы задача не ушла не тому."
+}
+
+/// Shown when the ranked resolver produced a single top candidate that is
+/// confident enough to suggest but not confident enough to auto-route.
+/// Keeping this as an owned `String` so we can interpolate the candidate
+/// without lifetime gymnastics at the call site.
+fn suggested_message(candidate_name: &str) -> String {
+    format!(
+        "Похоже, вы имели в виду — {candidate_name}. Подтвердите, если это правильный исполнитель, или выберите другого человека."
+    )
 }
 
 fn no_match_message(query: &str) -> &'static str {

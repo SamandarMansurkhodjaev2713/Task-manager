@@ -1,9 +1,20 @@
 use crate::application::dto::task_views::{TaskCreationOutcome, TaskListPage};
 use crate::presentation::telegram::callbacks::TaskListOrigin;
+use crate::shared::constants::limits::MAX_TASK_CREATION_CONFIRM_PREVIEW_CHARS;
 
 use super::super::ui_shared::{
     delivery_badge, delivery_detail, status_badge, status_label, INFO_EMOJI, TIME_EMOJI,
 };
+
+fn creation_confirm_body_preview(title: &str) -> String {
+    let limit = MAX_TASK_CREATION_CONFIRM_PREVIEW_CHARS;
+    let chars: usize = title.chars().count();
+    if chars <= limit {
+        return title.to_owned();
+    }
+    let short: String = title.chars().take(limit).collect();
+    format!("{short}…\n\nПолный текст — в карточке задачи.")
+}
 
 pub fn task_creation_text(outcome: &TaskCreationOutcome) -> String {
     match outcome {
@@ -14,7 +25,7 @@ pub fn task_creation_text(outcome: &TaskCreationOutcome) -> String {
             status_label(summary.task.status),
             delivery_badge(summary.delivery_status),
             delivery_detail(summary.delivery_status),
-            summary.task.title
+            creation_confirm_body_preview(&summary.task.title)
         ),
         TaskCreationOutcome::DuplicateFound(summary) => format!(
             "{INFO_EMOJI} Такая задача уже есть\n\nКод: {}\nСтатус: {} {}\n\nЯ не создавал дубль. Откройте текущую карточку и продолжайте работу из неё.",
@@ -23,6 +34,14 @@ pub fn task_creation_text(outcome: &TaskCreationOutcome) -> String {
             status_label(summary.task.status),
         ),
         TaskCreationOutcome::ClarificationRequired(request) => {
+            let task_anchor = request
+                .task_body_preview
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|body| format!("📋 Текст задачи:\n{body}\n\n────────\n\n"))
+                .unwrap_or_default();
+
             let candidates = if request.candidates.is_empty() {
                 "Пока не вижу точного совпадения.".to_owned()
             } else {
@@ -45,8 +64,8 @@ pub fn task_creation_text(outcome: &TaskCreationOutcome) -> String {
             };
 
             format!(
-                "{INFO_EMOJI} Нужно уточнить исполнителя\n\n{}\n\n{}",
-                request.message, candidates
+                "{INFO_EMOJI} Нужно уточнить исполнителя\n\n{task_anchor}{}\n\n{candidates}",
+                request.message
             )
         }
     }

@@ -10,7 +10,10 @@
       "Bash(find C:\\\\\\\\Users\\\\\\\\sam4k\\\\\\\\task-tg-bot -name \"entity.rs\" -o -name \"types.rs\")",
       "Bash(cargo clippy *)",
       "Bash(cargo fmt *)",
-      "Bash(cargo clean *)"
+      "Bash(cargo clean *)",
+      "Bash(find /c/Users/sam4k/task-tg-bot/src -type f \\\\\\( -name \"*.rs\" \\\\\\) -exec wc -l {} +)",
+      "Bash(find /c/Users/sam4k/task-tg-bot/migrations -type f \\\\\\( -name \"*.sql\" \\\\\\) -exec wc -l {} +)",
+      "Bash(find /c/Users/sam4k/task-tg-bot/src -type f -name \"*.rs\" -exec wc -l {} +)"
     ]
   }
 }

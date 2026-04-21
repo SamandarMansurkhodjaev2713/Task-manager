@@ -32,7 +32,12 @@ static IN_PERIOD_REGEX: Lazy<Regex> = Lazy::new(|| {
         .expect("period deadline regex must compile")
 });
 static WEEKDAY_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?i)\b(?:до|к)?\s*(?P<raw>понедельник|вторник|среда|четверг|пятница|суббота|воскресенье)\b")
+    // Accept nominative (именительный, "пятница") and genitive
+    // (родительный, "пятницы") forms, because the natural Russian phrase
+    // for "by Friday" is «до пятницы» / «к пятнице» — not «до пятница».
+    // This keeps the kernel's deterministic fallback aligned with how
+    // users actually write deadlines.
+    Regex::new(r"(?i)\b(?:до|к)?\s*(?P<raw>понедельник(?:а|у)?|вторник(?:а|у)?|сред[аеыу]|четверг(?:а|у)?|пятниц[аеы]|суббот[аеыу]|воскресень[еяю])\b")
         .expect("weekday deadline regex must compile")
 });
 static WHITESPACE_REGEX: Lazy<Regex> =
@@ -84,19 +89,31 @@ fn extract_deadline(
     message_text: &str,
     today: NaiveDate,
 ) -> AppResult<(Option<NaiveDate>, Option<String>)> {
-    if let Some(parsed) = parse_absolute_deadline(message_text, today)? {
+    extract_deadline_from_text(message_text, today)
+}
+
+/// Public variant that can be called by the unified deadline kernel
+/// (`domain::deadline`) without triggering the description validation
+/// inside [`parse_task_request`].  Callers that only want to know whether
+/// the user mentioned a due date use this directly.
+pub fn extract_deadline_from_text(
+    message_text: &str,
+    today: NaiveDate,
+) -> AppResult<(Option<NaiveDate>, Option<String>)> {
+    let normalized = normalize_whitespace(message_text);
+    if let Some(parsed) = parse_absolute_deadline(&normalized, today)? {
         return Ok(parsed);
     }
 
-    if let Some(parsed) = parse_relative_deadline(message_text, today) {
+    if let Some(parsed) = parse_relative_deadline(&normalized, today) {
         return Ok(parsed);
     }
 
-    if let Some(parsed) = parse_period_deadline(message_text, today)? {
+    if let Some(parsed) = parse_period_deadline(&normalized, today)? {
         return Ok(parsed);
     }
 
-    Ok(parse_weekday_deadline(message_text, today))
+    Ok(parse_weekday_deadline(&normalized, today))
 }
 
 fn parse_absolute_deadline(
@@ -258,16 +275,33 @@ fn invalid_deadline_error(field: &'static str, raw: &str) -> AppError {
 }
 
 fn weekday_from_russian(value: &str) -> Option<Weekday> {
-    match value.to_lowercase().as_str() {
-        "понедельник" => Some(Weekday::Mon),
-        "вторник" => Some(Weekday::Tue),
-        "среда" => Some(Weekday::Wed),
-        "четверг" => Some(Weekday::Thu),
-        "пятница" => Some(Weekday::Fri),
-        "суббота" => Some(Weekday::Sat),
-        "воскресенье" => Some(Weekday::Sun),
-        _ => None,
+    // Normalise to the nominative stem so that "пятницы"/"пятнице" and
+    // "пятница" all map to Friday.  We match on the stem prefix rather
+    // than an exact equality because Russian declension affixes are short
+    // and the regex ensures the input is a well-formed weekday word.
+    let lowered = value.to_lowercase();
+    if lowered.starts_with("понедельник") {
+        return Some(Weekday::Mon);
     }
+    if lowered.starts_with("вторник") {
+        return Some(Weekday::Tue);
+    }
+    if lowered.starts_with("сред") {
+        return Some(Weekday::Wed);
+    }
+    if lowered.starts_with("четверг") {
+        return Some(Weekday::Thu);
+    }
+    if lowered.starts_with("пятниц") {
+        return Some(Weekday::Fri);
+    }
+    if lowered.starts_with("суббот") {
+        return Some(Weekday::Sat);
+    }
+    if lowered.starts_with("воскресень") {
+        return Some(Weekday::Sun);
+    }
+    None
 }
 
 fn days_until_weekday(current: Weekday, target: Weekday) -> u32 {

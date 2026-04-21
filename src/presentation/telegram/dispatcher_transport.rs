@@ -9,6 +9,33 @@ use crate::presentation::telegram::active_screens::{ActiveScreenState, ScreenDes
 
 use super::{TelegramRuntime, RATE_LIMIT_MESSAGE};
 
+/// Consult the per-update UX barrier (installed by the gateway in
+/// `handle_message` / `handle_callback_query`) before rendering anything to
+/// the user.  Returns `true` if this call is allowed to render.
+///
+/// Outside of an active update (background jobs, integration tests that bypass
+/// the gateway), `current_barrier_for` returns `None` and we default to
+/// "allowed" — the barrier is strictly about "one update, one UX effect", not
+/// a global mutex.
+async fn try_consume_update_barrier(
+    state: &TelegramRuntime,
+    chat_id: i64,
+    site: &'static str,
+) -> bool {
+    let Some(barrier) = state.current_barrier_for(chat_id).await else {
+        return true;
+    };
+    if barrier.try_consume() {
+        return true;
+    }
+    tracing::warn!(
+        chat_id,
+        site,
+        "UX barrier already consumed — suppressing duplicate outbound effect on the same update"
+    );
+    false
+}
+
 pub(crate) async fn send_screen(
     bot: &Bot,
     state: &TelegramRuntime,
@@ -17,6 +44,9 @@ pub(crate) async fn send_screen(
     text: &str,
     keyboard: InlineKeyboardMarkup,
 ) -> Result<(), teloxide::RequestError> {
+    if !try_consume_update_barrier(state, chat_id.0, "send_screen").await {
+        return Ok(());
+    }
     if let Some(active_screen) = state.active_screens.get(chat_id.0).await {
         match try_edit_screen(
             bot,
@@ -69,6 +99,9 @@ pub(crate) async fn send_fresh_screen(
     text: &str,
     keyboard: InlineKeyboardMarkup,
 ) -> Result<(), teloxide::RequestError> {
+    if !try_consume_update_barrier(state, chat_id.0, "send_fresh_screen").await {
+        return Ok(());
+    }
     let sent_message = bot
         .send_message(chat_id, text.to_owned())
         .reply_markup(keyboard)
@@ -99,6 +132,7 @@ pub(crate) async fn answer_callback(
 
 pub(crate) async fn send_error(
     bot: &Bot,
+    state: &TelegramRuntime,
     chat_id: i64,
     error: AppError,
 ) -> Result<(), teloxide::RequestError> {
@@ -109,6 +143,14 @@ pub(crate) async fn send_error(
         message = error.message(),
         "application error presented to user"
     );
+
+    // Gate behind the per-update UX barrier: if another effect already went
+    // out on this update (e.g. onboarding welcome), we MUST NOT follow it
+    // with an error banner — that's exactly the "Welcome + Некорректный
+    // запрос" regression we're fixing in P0.
+    if !try_consume_update_barrier(state, chat_id, "send_error").await {
+        return Ok(());
+    }
 
     let message = match &error {
         AppError::NotFound { .. } => {

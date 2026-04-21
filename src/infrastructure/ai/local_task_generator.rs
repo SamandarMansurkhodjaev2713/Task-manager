@@ -32,6 +32,11 @@ impl TaskGenerator for LocalTaskGenerator {
             expected_result,
             steps,
             acceptance_criteria,
+            deadline_iso: parsed_request
+                .deadline
+                .map(|date| date.format("%Y-%m-%d").to_string()),
+            refused: false,
+            refusal_reason: None,
         };
         structured_task.validate_business_rules()?;
 

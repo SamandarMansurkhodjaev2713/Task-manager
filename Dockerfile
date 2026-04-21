@@ -1,19 +1,29 @@
+# Toolchain: keep >= `rust-version` in Cargo.toml (currently 1.85); image tracks stable.
 FROM rust:1.91-bookworm AS builder
 
 WORKDIR /app
 
 ENV RUSTFLAGS=-Cdebuginfo=0
 
+# Build-time metadata.  Populated via `docker build --build-arg GIT_SHA=...`
+# (or by docker-compose build args).  Surfaced through the `/version`
+# endpoint so deploys are cross-checkable.
+ARG GIT_SHA=unknown
+ENV GIT_SHA=${GIT_SHA}
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates libsqlite3-dev pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
-COPY Cargo.toml Cargo.lock ./
-COPY src ./src
+COPY Cargo.toml Cargo.lock build.rs ./
+# Migrations before `src/` so edits to application code do not invalidate this layer.
 COPY migrations ./migrations
+COPY src ./src
 COPY tests ./tests
 
-RUN cargo build --release
+RUN RUSTC_VERSION=$(rustc --version) \
+    && export RUSTC_VERSION \
+    && cargo build --release
 
 FROM rust:1.91-bookworm AS test-runner
 
@@ -21,17 +31,22 @@ WORKDIR /app
 
 ENV RUSTFLAGS=-Cdebuginfo=0
 
+ARG GIT_SHA=unknown
+ENV GIT_SHA=${GIT_SHA}
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates libsqlite3-dev pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
-COPY Cargo.toml Cargo.lock ./
-COPY src ./src
+COPY Cargo.toml Cargo.lock build.rs ./
 COPY migrations ./migrations
+COPY src ./src
 COPY tests ./tests
 
 # Run unit tests (library targets only; integration tests requiring env-vars run via docker-compose).
-RUN cargo test --lib --workspace 2>&1
+RUN RUSTC_VERSION=$(rustc --version) \
+    && export RUSTC_VERSION \
+    && cargo test --lib --workspace
 
 FROM debian:bookworm-slim AS runtime
 

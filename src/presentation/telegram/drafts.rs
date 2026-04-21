@@ -18,7 +18,16 @@ pub struct GuidedTaskDraft {
     /// Stable identity for this draft submission; used as `source_message_key`
     /// so that retrying the same guided submit is idempotent (INSERT OR IGNORE).
     pub submission_key: Uuid,
+    /// Raw assignee text entered by the user (first name, full name, or @username).
+    /// Kept for display purposes and as the fallback when `resolved_employee_id` is absent.
     pub assignee: Option<String>,
+    /// Employee ID confirmed during the early-resolution step.
+    ///
+    /// When `Some`, `submit()` calls `execute_with_assignee_decision(EmployeeId(id))`
+    /// and skips the text-based fuzzy matcher entirely.  Set to `None` when the
+    /// user re-edits the Assignee step (via `edit_field(Assignee)`) so that
+    /// a changed input forces a fresh resolution.
+    pub resolved_employee_id: Option<i64>,
     pub description: Option<String>,
     pub deadline: Option<String>,
     pub step: GuidedTaskStep,
@@ -29,6 +38,10 @@ pub struct VoiceTaskDraft {
     pub source_message_key: String,
     pub transcript: String,
     pub step: VoiceTaskStep,
+    /// `true` when the STT output was clipped to the token budget
+    /// (see `NormalizedTranscript`) so the UI can surface a warning and
+    /// offer "записать заново" as a primary CTA.
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +68,7 @@ impl GuidedTaskDraft {
         Self {
             submission_key: Uuid::now_v7(),
             assignee: None,
+            resolved_employee_id: None,
             description: None,
             deadline: None,
             step: GuidedTaskStep::Assignee,
@@ -63,7 +77,12 @@ impl GuidedTaskDraft {
 
     pub fn edit_field(&mut self, field: DraftEditField) {
         self.step = match field {
-            DraftEditField::Assignee => GuidedTaskStep::Assignee,
+            DraftEditField::Assignee => {
+                // Clear the pre-resolved employee so a changed assignee text
+                // is not silently paired with the old resolved ID.
+                self.resolved_employee_id = None;
+                GuidedTaskStep::Assignee
+            }
             DraftEditField::Description => GuidedTaskStep::Description,
             DraftEditField::Deadline => GuidedTaskStep::Deadline,
         };
@@ -82,7 +101,14 @@ impl VoiceTaskDraft {
             source_message_key,
             transcript,
             step: VoiceTaskStep::Confirm,
+            truncated: false,
         }
+    }
+
+    /// Tag the draft as clipped so downstream UI can render a warning.
+    pub fn with_truncation(mut self, truncated: bool) -> Self {
+        self.truncated = truncated;
+        self
     }
 
     pub fn start_editing(mut self) -> Self {
@@ -93,6 +119,8 @@ impl VoiceTaskDraft {
     pub fn replace_transcript(mut self, transcript: String) -> Self {
         self.transcript = transcript;
         self.step = VoiceTaskStep::Confirm;
+        // Manual edit supersedes the STT-clipping warning.
+        self.truncated = false;
         self
     }
 
@@ -149,7 +177,44 @@ impl CreationSessionStore {
 
 #[cfg(test)]
 mod tests {
-    use super::{VoiceTaskDraft, VoiceTaskStep};
+    use crate::presentation::telegram::callbacks::DraftEditField;
+
+    use super::{GuidedTaskDraft, GuidedTaskStep, VoiceTaskDraft, VoiceTaskStep};
+
+    // ── GuidedTaskDraft ──────────────────────────────────────────────────────
+
+    #[test]
+    fn given_draft_with_resolved_employee_when_edit_assignee_then_clears_resolved_id() {
+        let mut draft = GuidedTaskDraft::new();
+        draft.resolved_employee_id = Some(42);
+        draft.step = GuidedTaskStep::Description;
+
+        draft.edit_field(DraftEditField::Assignee);
+
+        assert_eq!(
+            draft.resolved_employee_id, None,
+            "re-editing the assignee step must clear the pre-resolved employee ID"
+        );
+        assert_eq!(draft.step, GuidedTaskStep::Assignee);
+    }
+
+    #[test]
+    fn given_draft_with_resolved_employee_when_edit_description_then_preserves_resolved_id() {
+        let mut draft = GuidedTaskDraft::new();
+        draft.resolved_employee_id = Some(42);
+        draft.step = GuidedTaskStep::Confirm;
+
+        draft.edit_field(DraftEditField::Description);
+
+        assert_eq!(
+            draft.resolved_employee_id,
+            Some(42),
+            "editing a non-assignee field must not touch resolved_employee_id"
+        );
+        assert_eq!(draft.step, GuidedTaskStep::Description);
+    }
+
+    // ── VoiceTaskDraft ───────────────────────────────────────────────────────
 
     #[test]
     fn given_voice_draft_when_start_editing_then_switches_to_edit_mode() {

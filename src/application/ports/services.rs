@@ -33,6 +33,20 @@ pub trait EmployeeDirectoryGateway: Send + Sync {
     async fn fetch_employees(&self) -> AppResult<Vec<Employee>>;
 }
 
+/// Provides a compact "Full Name — @username" roster digest for the AI
+/// prompt context.  Kept as a dedicated port so the AI infrastructure
+/// never reaches into [`EmployeeRepository`] directly (clean architecture
+/// boundary) and can be faked/stubbed in tests without spinning up a
+/// database.
+///
+/// The returned string is PII-light (no phone numbers, no email), bounded
+/// in size by the implementation, and MAY be empty (the prompt treats
+/// empty as "no roster available").
+#[async_trait]
+pub trait DirectoryDigestProvider: Send + Sync {
+    async fn fetch_digest(&self) -> AppResult<String>;
+}
+
 #[async_trait]
 pub trait TelegramNotifier: Send + Sync {
     async fn send_text(&self, chat_id: i64, text: &str) -> AppResult<MessageId>;

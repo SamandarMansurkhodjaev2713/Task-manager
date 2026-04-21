@@ -26,6 +26,9 @@ fn make_task() -> Task {
             expected_result: "Сборка успешна".to_owned(),
             steps: vec!["Запустить CI".to_owned()],
             acceptance_criteria: vec![],
+            deadline_iso: None,
+            refused: false,
+            refusal_reason: None,
         },
         None,
         None,
@@ -67,6 +70,7 @@ fn make_clarification_request(allow_unassigned: bool) -> ClarificationRequest {
                 confidence: 100,
             },
         ],
+        task_body_preview: None,
     }
 }
 

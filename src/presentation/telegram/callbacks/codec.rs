@@ -2,7 +2,9 @@ use uuid::Uuid;
 
 use crate::domain::task::TaskStatus;
 
-use super::types::{DraftEditField, TaskCardMode, TaskListOrigin, TelegramCallback};
+use super::types::{
+    AdminRoleOption, DraftEditField, TaskCardMode, TaskListOrigin, TelegramCallback,
+};
 
 const CALLBACK_GROUP_MENU: &str = "m";
 const CALLBACK_GROUP_LIST: &str = "l";
@@ -10,6 +12,7 @@ const CALLBACK_GROUP_TASK: &str = "t";
 const CALLBACK_GROUP_CREATE: &str = "c";
 const CALLBACK_GROUP_DRAFT: &str = "d";
 const CALLBACK_GROUP_INPUT: &str = "i";
+const CALLBACK_GROUP_ADMIN: &str = "a";
 const EMPTY_CURSOR: &str = "_";
 
 pub fn encode_callback(callback: &TelegramCallback) -> String {
@@ -99,6 +102,34 @@ pub fn encode_callback(callback: &TelegramCallback) -> String {
         TelegramCallback::DraftSubmit => format!("{CALLBACK_GROUP_DRAFT}:submit"),
         TelegramCallback::DraftEdit { field } => {
             format!("{CALLBACK_GROUP_DRAFT}:edit:{}", draft_field_code(*field))
+        }
+        TelegramCallback::GuidedAssigneeConfirm { employee_id } => {
+            format!("{CALLBACK_GROUP_DRAFT}:assignee_pick:{employee_id}")
+        }
+        TelegramCallback::AdminMenu => format!("{CALLBACK_GROUP_ADMIN}:menu"),
+        TelegramCallback::AdminUsers => format!("{CALLBACK_GROUP_ADMIN}:users"),
+        TelegramCallback::AdminUserDetails { user_id } => {
+            format!("{CALLBACK_GROUP_ADMIN}:user:{user_id}")
+        }
+        TelegramCallback::AdminUserPrepareRoleChange { user_id, next_role } => format!(
+            "{CALLBACK_GROUP_ADMIN}:role:{user_id}:{}",
+            next_role.as_code()
+        ),
+        TelegramCallback::AdminUserPrepareDeactivate { user_id } => {
+            format!("{CALLBACK_GROUP_ADMIN}:deact:{user_id}")
+        }
+        TelegramCallback::AdminUserPrepareReactivate { user_id } => {
+            format!("{CALLBACK_GROUP_ADMIN}:react:{user_id}")
+        }
+        TelegramCallback::AdminConfirmNonce { nonce } => {
+            format!("{CALLBACK_GROUP_ADMIN}:confirm:{nonce}")
+        }
+        TelegramCallback::AdminCancelPending => format!("{CALLBACK_GROUP_ADMIN}:cancel"),
+        TelegramCallback::AdminAudit => format!("{CALLBACK_GROUP_ADMIN}:audit"),
+        TelegramCallback::AdminSecurityAudit => format!("{CALLBACK_GROUP_ADMIN}:sec_audit"),
+        TelegramCallback::AdminFeatures => format!("{CALLBACK_GROUP_ADMIN}:feat"),
+        TelegramCallback::AdminToggleFeature { flag_key } => {
+            format!("{CALLBACK_GROUP_ADMIN}:ftog:{flag_key}")
         }
     }
 }
@@ -201,6 +232,42 @@ fn parse_callback_modern(value: &str) -> Option<TelegramCallback> {
         [CALLBACK_GROUP_DRAFT, "submit"] => Some(TelegramCallback::DraftSubmit),
         [CALLBACK_GROUP_DRAFT, "edit", field] => Some(TelegramCallback::DraftEdit {
             field: parse_draft_field(field)?,
+        }),
+        [CALLBACK_GROUP_DRAFT, "assignee_pick", employee_id] => {
+            Some(TelegramCallback::GuidedAssigneeConfirm {
+                employee_id: employee_id.parse::<i64>().ok()?,
+            })
+        }
+        [CALLBACK_GROUP_ADMIN, "menu"] => Some(TelegramCallback::AdminMenu),
+        [CALLBACK_GROUP_ADMIN, "users"] => Some(TelegramCallback::AdminUsers),
+        [CALLBACK_GROUP_ADMIN, "user", user_id] => Some(TelegramCallback::AdminUserDetails {
+            user_id: user_id.parse::<i64>().ok()?,
+        }),
+        [CALLBACK_GROUP_ADMIN, "role", user_id, role_code] => {
+            Some(TelegramCallback::AdminUserPrepareRoleChange {
+                user_id: user_id.parse::<i64>().ok()?,
+                next_role: AdminRoleOption::from_code(role_code)?,
+            })
+        }
+        [CALLBACK_GROUP_ADMIN, "deact", user_id] => {
+            Some(TelegramCallback::AdminUserPrepareDeactivate {
+                user_id: user_id.parse::<i64>().ok()?,
+            })
+        }
+        [CALLBACK_GROUP_ADMIN, "react", user_id] => {
+            Some(TelegramCallback::AdminUserPrepareReactivate {
+                user_id: user_id.parse::<i64>().ok()?,
+            })
+        }
+        [CALLBACK_GROUP_ADMIN, "confirm", nonce] => Some(TelegramCallback::AdminConfirmNonce {
+            nonce: (*nonce).to_owned(),
+        }),
+        [CALLBACK_GROUP_ADMIN, "cancel"] => Some(TelegramCallback::AdminCancelPending),
+        [CALLBACK_GROUP_ADMIN, "audit"] => Some(TelegramCallback::AdminAudit),
+        [CALLBACK_GROUP_ADMIN, "sec_audit"] => Some(TelegramCallback::AdminSecurityAudit),
+        [CALLBACK_GROUP_ADMIN, "feat"] => Some(TelegramCallback::AdminFeatures),
+        [CALLBACK_GROUP_ADMIN, "ftog", flag_key] => Some(TelegramCallback::AdminToggleFeature {
+            flag_key: (*flag_key).to_owned(),
         }),
         _ => None,
     }
@@ -409,6 +476,81 @@ mod tests {
     #[test]
     fn given_registration_employee_callback_when_roundtrip_then_it_parses_back() {
         let callback = TelegramCallback::RegistrationPickEmployee { employee_id: 5 };
+
+        let encoded = encode_callback(&callback);
+        let parsed = parse_callback(&encoded);
+
+        assert_eq!(parsed, Some(callback));
+    }
+
+    #[test]
+    fn given_admin_menu_callback_when_roundtrip_then_it_parses_back() {
+        let callback = TelegramCallback::AdminMenu;
+
+        let encoded = encode_callback(&callback);
+        let parsed = parse_callback(&encoded);
+
+        assert_eq!(parsed, Some(callback));
+    }
+
+    #[test]
+    fn given_admin_role_change_callback_when_roundtrip_then_roles_preserved() {
+        use crate::presentation::telegram::callbacks::AdminRoleOption;
+
+        for role in [
+            AdminRoleOption::User,
+            AdminRoleOption::Manager,
+            AdminRoleOption::Admin,
+        ] {
+            let callback = TelegramCallback::AdminUserPrepareRoleChange {
+                user_id: 77,
+                next_role: role,
+            };
+
+            let encoded = encode_callback(&callback);
+            let parsed = parse_callback(&encoded);
+
+            assert_eq!(parsed, Some(callback));
+        }
+    }
+
+    #[test]
+    fn given_admin_confirm_nonce_callback_when_roundtrip_then_nonce_preserved() {
+        let callback = TelegramCallback::AdminConfirmNonce {
+            nonce: "abc123".to_owned(),
+        };
+
+        let encoded = encode_callback(&callback);
+        let parsed = parse_callback(&encoded);
+
+        assert_eq!(parsed, Some(callback));
+    }
+
+    #[test]
+    fn given_admin_toggle_feature_callback_when_roundtrip_then_key_preserved() {
+        let callback = TelegramCallback::AdminToggleFeature {
+            flag_key: "admin_panel".to_owned(),
+        };
+
+        let encoded = encode_callback(&callback);
+        let parsed = parse_callback(&encoded);
+
+        assert_eq!(parsed, Some(callback));
+    }
+
+    #[test]
+    fn given_guided_assignee_confirm_when_roundtrip_then_employee_id_preserved() {
+        let callback = TelegramCallback::GuidedAssigneeConfirm { employee_id: 99 };
+
+        let encoded = encode_callback(&callback);
+        let parsed = parse_callback(&encoded);
+
+        assert_eq!(parsed, Some(callback));
+    }
+
+    #[test]
+    fn given_admin_security_audit_callback_when_roundtrip_then_it_parses_back() {
+        let callback = TelegramCallback::AdminSecurityAudit;
 
         let encoded = encode_callback(&callback);
         let parsed = parse_callback(&encoded);

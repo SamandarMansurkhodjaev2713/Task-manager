@@ -1,6 +1,7 @@
 use teloxide::types::ChatId;
 use teloxide::Bot;
 
+use crate::application::use_cases::assignee_resolution::AssigneeResolution;
 use crate::domain::message::{IncomingMessage, MessageContent};
 use crate::domain::user::User;
 use crate::presentation::telegram::active_screens::ScreenDescriptor;
@@ -99,9 +100,18 @@ pub(crate) fn build_guided_message(
     draft: &GuidedTaskDraft,
     description: &str,
 ) -> IncomingMessage {
-    let base_text = match draft.assignee.as_deref() {
-        Some(assignee) => format!("{assignee}, {description}"),
-        None => description.to_owned(),
+    // When the assignee was pre-resolved during the Assignee step, we do NOT
+    // include the raw assignee text in the synthetic message.  The
+    // `TaskAssigneeDecision::EmployeeId` path in the use case bypasses text-based
+    // assignee parsing entirely, so including a raw abbreviation like "abd"
+    // in the message would cause it to bleed into the task description.
+    let base_text = if draft.resolved_employee_id.is_some() {
+        description.to_owned()
+    } else {
+        match draft.assignee.as_deref() {
+            Some(assignee) => format!("{assignee}, {description}"),
+            None => description.to_owned(),
+        }
     };
     let deadline_suffix = draft
         .deadline
@@ -147,20 +157,72 @@ async fn handle_guided_assignee_step(
         .await;
     };
 
-    let updated = update_guided_assignee(draft, value);
-    state
-        .creation_sessions
-        .update_guided(chat_id.0, updated)
-        .await;
-    send_screen(
-        bot,
-        state,
-        chat_id,
-        ScreenDescriptor::GuidedStep(GuidedTaskStep::Description),
-        &ui::guided_description_prompt(),
-        ui::create_menu_keyboard(),
-    )
-    .await
+    // Resolve the assignee immediately so we surface suggestions or an
+    // ambiguity screen *before* the user advances to Description.
+    // This prevents the silent-failure case where an abbreviation or
+    // unrecognised name is accepted and only rejected at submit time.
+    match state
+        .create_task_use_case
+        .preview_assignee_resolution(value)
+        .await
+    {
+        Ok(AssigneeResolution::Resolved(resolved)) => {
+            // Unique high-confidence match (≥ 95%) — store the employee ID
+            // and advance to Description without interrupting the user.
+            let employee_id = resolved.employee.as_ref().and_then(|e| e.id);
+            let updated = update_guided_assignee_resolved(draft, value, employee_id);
+            state
+                .creation_sessions
+                .update_guided(chat_id.0, updated)
+                .await;
+            send_screen(
+                bot,
+                state,
+                chat_id,
+                ScreenDescriptor::GuidedStep(GuidedTaskStep::Description),
+                &ui::guided_description_prompt(),
+                ui::create_menu_keyboard(),
+            )
+            .await
+        }
+        Ok(AssigneeResolution::ClarificationRequired(request)) => {
+            // Ambiguous, partial, or not-found — show candidates inline now
+            // so the user picks before proceeding to Description.
+            // Preserve the draft unchanged (no assignee or resolved_id set yet).
+            state
+                .creation_sessions
+                .update_guided(chat_id.0, draft)
+                .await;
+            send_screen(
+                bot,
+                state,
+                chat_id,
+                ScreenDescriptor::GuidedAssigneeOptions,
+                &ui::guided_assignee_clarification_text(&request.message),
+                ui::guided_assignee_suggestions_keyboard(&request.candidates),
+            )
+            .await
+        }
+        Err(_) => {
+            // Resolution service error (e.g. DB unavailable): degrade
+            // gracefully by storing the raw text and advancing — the fuzzy
+            // matcher at submit time is the safety net.
+            let updated = update_guided_assignee(draft, value);
+            state
+                .creation_sessions
+                .update_guided(chat_id.0, updated)
+                .await;
+            send_screen(
+                bot,
+                state,
+                chat_id,
+                ScreenDescriptor::GuidedStep(GuidedTaskStep::Description),
+                &ui::guided_description_prompt(),
+                ui::create_menu_keyboard(),
+            )
+            .await
+        }
+    }
 }
 
 async fn handle_guided_description_step(
@@ -211,6 +273,21 @@ async fn handle_guided_deadline_step(
 
 fn update_guided_assignee(mut draft: GuidedTaskDraft, value: &str) -> GuidedTaskDraft {
     draft.assignee = Some(value.to_owned());
+    draft.resolved_employee_id = None; // explicit: no pre-resolution
+    draft.step = GuidedTaskStep::Description;
+    draft
+}
+
+/// Stores both the raw assignee text and the pre-resolved employee ID.
+/// Used when `preview_assignee_resolution` returns a unique high-confidence
+/// match so `submit()` can bypass the fuzzy matcher entirely.
+fn update_guided_assignee_resolved(
+    mut draft: GuidedTaskDraft,
+    raw_value: &str,
+    employee_id: Option<i64>,
+) -> GuidedTaskDraft {
+    draft.assignee = Some(raw_value.to_owned());
+    draft.resolved_employee_id = employee_id;
     draft.step = GuidedTaskStep::Description;
     draft
 }

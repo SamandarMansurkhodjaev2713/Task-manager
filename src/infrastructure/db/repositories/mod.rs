@@ -1,14 +1,28 @@
+mod admin_audit_repository;
 mod audit_repository;
 mod comment_repository;
 mod common;
 mod employee_repository;
+mod feature_flag_repository;
 mod notification_repository;
+mod person_trigram_repository;
+mod recurrence_repository;
+mod security_audit_repository;
+mod sla_repository;
 mod task_repository;
 mod user_repository;
+mod voice_processing_repository;
 
+pub use admin_audit_repository::SqliteAdminAuditLogRepository;
 pub use audit_repository::SqliteAuditLogRepository;
 pub use comment_repository::SqliteCommentRepository;
 pub use employee_repository::SqliteEmployeeRepository;
+pub use feature_flag_repository::SqliteFeatureFlagRepository;
 pub use notification_repository::SqliteNotificationRepository;
+pub use person_trigram_repository::SqlitePersonTrigramIndex;
+pub use recurrence_repository::SqliteRecurrenceRepository;
+pub use security_audit_repository::SqliteSecurityAuditLogRepository;
+pub use sla_repository::SqliteSlaRepository;
 pub use task_repository::SqliteTaskRepository;
 pub use user_repository::SqliteUserRepository;
+pub use voice_processing_repository::SqliteVoiceProcessingRepository;

@@ -5,7 +5,7 @@ use crate::domain::task::{MessageType, TaskPriority, TaskStatus};
 use crate::domain::user::UserRole;
 
 pub(crate) const USER_COLUMNS: &str =
-    "id, telegram_id, last_chat_id, telegram_username, full_name, linked_employee_id, is_employee, role, created_at, updated_at";
+    "id, telegram_id, last_chat_id, telegram_username, full_name, first_name, last_name, linked_employee_id, is_employee, role, onboarding_state, onboarding_version, timezone, quiet_hours_start_min, quiet_hours_end_min, deactivated_at, created_at, updated_at";
 pub(crate) const EMPLOYEE_COLUMNS: &str =
     "id, full_name, telegram_username, email, phone, department, is_active, synced_at, created_at, updated_at";
 pub(crate) const TASK_COLUMNS: &str =
@@ -15,6 +15,10 @@ pub(crate) const NOTIFICATION_COLUMNS: &str =
 pub(crate) const AUDIT_COLUMNS: &str =
     "id, task_id, action, old_status, new_status, changed_by_user_id, metadata, created_at";
 pub(crate) const COMMENT_COLUMNS: &str = "id, task_id, author_user_id, kind, body, created_at";
+pub(crate) const ADMIN_AUDIT_COLUMNS: &str =
+    "id, actor_user_id, target_user_id, action_code, metadata, created_at";
+pub(crate) const SECURITY_AUDIT_COLUMNS: &str =
+    "id, actor_user_id, telegram_id, event_code, metadata, created_at";
 
 pub(crate) fn bool_as_i64(value: bool) -> i64 {
     if value {
@@ -70,6 +74,7 @@ pub(crate) fn notification_type_to_db(value: NotificationType) -> &'static str {
         NotificationType::TaskReviewRequested => "task_review_requested",
         NotificationType::TaskBlocked => "task_blocked",
         NotificationType::DailySummary => "daily_summary",
+        NotificationType::SlaEscalation => "sla_escalation",
     }
 }
 

@@ -15,13 +15,23 @@
 
 1. Fill `.env` from `.env.example`
 2. Provide all required secrets through environment variables
-3. Mount persistent storage for SQLite
-4. Run migrations on startup
-5. Ask employees to send `/start` to the bot at least once
-6. Verify:
-   - `GET /healthz`
-   - `GET /metrics`
-7. Check that the notification queue drains successfully
+3. Populate `TELEGRAM_ADMIN_IDS` with the Telegram IDs of people who
+   must be admins from day one.  The list is additive and
+   promotion-only; the last-admin invariant is enforced by the
+   repository, so deletion from `.env` never demotes anyone.
+4. Verify `FEATURE_FLAGS` only lists known flags (the process refuses
+   to boot on unknown names to surface typos early).
+5. Mount persistent storage for SQLite
+6. Run migrations on startup
+7. Ask employees to send `/start` to the bot at least once
+8. Verify observability endpoints:
+   - `GET /healthz` — must return `200` with `{"status":"ok"}`
+   - `GET /healthz/deep` — must return `200` with `{"checks":{"database":{"status":"ok",…}}}`
+   - `GET /metrics` — must serve Prometheus text with content-type
+     `text/plain; version=0.0.4`
+   - `GET /version` — cross-check `version` and `git_sha` against the
+     image tag being rolled out
+9. Check that the notification queue drains successfully
 
 ## Important Telegram constraint
 
@@ -122,6 +132,8 @@ docker compose up -d telegram-task-bot  # ensure COMPOSE_IMAGE_TAG points to pre
 
 ## Operational checks after deployment
 
+- send `/start` from a brand-new Telegram account and complete the
+  onboarding FSM (first name → last name → optional employee link)
 - create task from quick mode
 - create task from guided mode
 - create task from voice mode and verify confirmation appears before creation
@@ -132,6 +144,30 @@ docker compose up -d telegram-task-bot  # ensure COMPOSE_IMAGE_TAG points to pre
 - verify comment / blocker / review / reassignment flows
 - verify overdue and reminder jobs
 - verify queue retry behavior
+- verify `/admin` panel with a bootstrap admin:
+  - list users and open a user card
+  - change role (confirm via nonce button) and check `admin_audit_log`
+  - attempt to deactivate the last admin — must be refused
+  - attempt to change own role — must be refused
+  - confirm expired nonce message when waiting > TTL
+- verify `/find <запрос>` returns a bounded list of matching tasks
+
+## Admin lockout recovery
+
+The system is designed to make full lockout impossible via UI flows
+(last-admin invariant + self-target guard).  If lockout still happens
+(e.g. the `.env` list was emptied and the only admin's account got
+deleted externally), recover as follows:
+
+1. Stop the bot container.
+2. Add the rescue Telegram ID to `TELEGRAM_ADMIN_IDS` in `.env`.
+3. Start the bot.  `BootstrapAdminsUseCase` will promote the rescue
+   account on the next process start; if the user has not sent `/start`
+   yet, their elevation is recorded as pending and applied on first
+   interaction.
+4. Verify the elevation through `/admin → журнал аудита` and rotate
+   the rescue ID back out of `.env` afterwards (demotion must be done
+   from inside the admin panel).
 
 ## Documentation map
 

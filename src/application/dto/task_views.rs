@@ -6,6 +6,7 @@ use crate::domain::comment::{CommentKind, TaskComment};
 use crate::domain::employee::EmployeeMatch;
 use crate::domain::notification::NotificationDeliveryState;
 use crate::domain::task::{Task, TaskStats, TaskStatus};
+use crate::shared::constants::limits::MAX_CLARIFICATION_TASK_BODY_PREVIEW_CHARS;
 use crate::shared::task_codes::format_public_task_code_or_placeholder;
 
 #[derive(Debug, Clone, Serialize)]
@@ -47,6 +48,11 @@ pub struct ClarificationRequest {
     pub requested_query: Option<String>,
     pub allow_unassigned: bool,
     pub candidates: Vec<EmployeeCandidateView>,
+    /// Parsed task description (or title when reassigning) so the clarification
+    /// screen can repeat it: after many follow-up messages the original Telegram
+    /// message scrolls up and is easy to lose.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_body_preview: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -232,4 +238,23 @@ impl From<TaskStats> for StatsView {
             average_completion_hours: value.average_completion_hours,
         }
     }
+}
+
+/// Bounded preview of the task text for assignee-clarification UIs.
+pub fn format_task_body_preview_for_clarification(
+    task_description: &str,
+    fallback_full_text: &str,
+) -> String {
+    let body = task_description.trim();
+    let source = if body.is_empty() {
+        fallback_full_text.trim()
+    } else {
+        body
+    };
+    let limit = MAX_CLARIFICATION_TASK_BODY_PREVIEW_CHARS;
+    let n = source.chars().count();
+    if n <= limit {
+        return source.to_owned();
+    }
+    format!("{}…", source.chars().take(limit).collect::<String>())
 }

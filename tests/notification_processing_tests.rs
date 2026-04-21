@@ -7,7 +7,10 @@ use telegram_task_bot::domain::errors::AppError;
 use telegram_task_bot::domain::notification::{
     Notification, NotificationDeliveryState, NotificationType,
 };
-use telegram_task_bot::domain::user::{User, UserRole};
+use telegram_task_bot::domain::user::{
+    OnboardingState, User, UserRole, DEFAULT_QUIET_HOURS_END_MIN, DEFAULT_QUIET_HOURS_START_MIN,
+    DEFAULT_USER_TIMEZONE,
+};
 
 mod mock_impls {
     use async_trait::async_trait;
@@ -19,7 +22,7 @@ mod mock_impls {
     use telegram_task_bot::domain::errors::AppResult;
     use telegram_task_bot::domain::notification::{Notification, NotificationType};
     use telegram_task_bot::domain::task::{Task, TaskStats};
-    use telegram_task_bot::domain::user::User;
+    use telegram_task_bot::domain::user::{OnboardingState, User, UserRole};
     use uuid::Uuid;
 
     // ── Minimal stubs that panic if unexpectedly called ────────────────────────
@@ -57,15 +60,133 @@ mod mock_impls {
         }
     }
 
-    mockall::mock! {
-        pub UserRepo {}
-        #[async_trait]
-        impl UserRepository for UserRepo {
-            async fn upsert_from_message(&self, user: &User) -> AppResult<User>;
-            async fn find_by_id(&self, user_id: i64) -> AppResult<Option<User>>;
-            async fn find_by_telegram_id(&self, telegram_id: i64) -> AppResult<Option<User>>;
-            async fn find_by_username(&self, username: &str) -> AppResult<Option<User>>;
-            async fn list_with_chat_id(&self) -> AppResult<Vec<User>>;
+    // NOTE: `UserRepository` cannot be auto-mocked via `mockall::mock!` because
+    // its onboarding methods take `Option<&str>` parameters, which the mockall
+    // macro does not support (it cannot synthesize the required lifetime
+    // desugaring for `Option<&'_ T>`).  We hand-roll a thin mock that stores
+    // a boxed closure for `find_by_id` (the only method exercised here) and
+    // `unimplemented!()`s the rest.
+    type FindByIdFn = Box<dyn Fn(i64) -> AppResult<Option<User>> + Send + Sync + 'static>;
+
+    pub struct MockUserRepo {
+        find_by_id_fn: std::sync::Mutex<Option<FindByIdFn>>,
+    }
+
+    impl MockUserRepo {
+        pub fn new() -> Self {
+            Self {
+                find_by_id_fn: std::sync::Mutex::new(None),
+            }
+        }
+
+        /// Registers the stub for `find_by_id`.
+        pub fn set_find_by_id<F>(&self, f: F)
+        where
+            F: Fn(i64) -> AppResult<Option<User>> + Send + Sync + 'static,
+        {
+            *self.find_by_id_fn.lock().expect("mock lock poisoned") = Some(Box::new(f));
+        }
+    }
+
+    #[async_trait]
+    impl UserRepository for MockUserRepo {
+        async fn upsert_from_message(&self, _user: &User) -> AppResult<User> {
+            unimplemented!("upsert_from_message not exercised in these tests")
+        }
+
+        async fn find_by_id(&self, user_id: i64) -> AppResult<Option<User>> {
+            let guard = self.find_by_id_fn.lock().expect("mock lock poisoned");
+            let f = guard
+                .as_ref()
+                .expect("MockUserRepo::find_by_id invoked without a stub registered");
+            f(user_id)
+        }
+
+        async fn find_by_telegram_id(&self, _telegram_id: i64) -> AppResult<Option<User>> {
+            unimplemented!("find_by_telegram_id not exercised in these tests")
+        }
+
+        async fn find_by_username(&self, _username: &str) -> AppResult<Option<User>> {
+            unimplemented!("find_by_username not exercised in these tests")
+        }
+
+        async fn list_with_chat_id(&self) -> AppResult<Vec<User>> {
+            unimplemented!("list_with_chat_id not exercised in these tests")
+        }
+
+        async fn ensure_onboarding_session(
+            &self,
+            _telegram_id: i64,
+            _chat_id: i64,
+            _telegram_username: Option<&str>,
+            _fallback_full_name: Option<&str>,
+            _now: chrono::DateTime<chrono::Utc>,
+        ) -> AppResult<User> {
+            unimplemented!("ensure_onboarding_session not exercised in these tests")
+        }
+
+        async fn save_onboarding_progress(
+            &self,
+            _user_id: i64,
+            _expected_version: i64,
+            _next_state: OnboardingState,
+            _first_name: Option<&str>,
+            _last_name: Option<&str>,
+            _now: chrono::DateTime<chrono::Utc>,
+        ) -> AppResult<User> {
+            unimplemented!("save_onboarding_progress not exercised in these tests")
+        }
+
+        async fn complete_onboarding(
+            &self,
+            _user_id: i64,
+            _expected_version: i64,
+            _first_name: &str,
+            _last_name: &str,
+            _linked_employee_id: Option<i64>,
+            _now: chrono::DateTime<chrono::Utc>,
+        ) -> AppResult<User> {
+            unimplemented!("complete_onboarding not exercised in these tests")
+        }
+
+        async fn set_role(
+            &self,
+            _actor_user_id: i64,
+            _target_user_id: i64,
+            _next_role: UserRole,
+            _now: chrono::DateTime<chrono::Utc>,
+        ) -> AppResult<User> {
+            unimplemented!("set_role not exercised in these tests")
+        }
+
+        async fn deactivate(
+            &self,
+            _actor_user_id: i64,
+            _target_user_id: i64,
+            _now: chrono::DateTime<chrono::Utc>,
+        ) -> AppResult<User> {
+            unimplemented!("deactivate not exercised in these tests")
+        }
+
+        async fn reactivate(
+            &self,
+            _actor_user_id: i64,
+            _target_user_id: i64,
+            _now: chrono::DateTime<chrono::Utc>,
+        ) -> AppResult<User> {
+            unimplemented!("reactivate not exercised in these tests")
+        }
+
+        async fn list_active_admins(&self) -> AppResult<Vec<User>> {
+            unimplemented!("list_active_admins not exercised in these tests")
+        }
+
+        async fn promote_bootstrap_admin(
+            &self,
+            _telegram_id: i64,
+            _now: chrono::DateTime<chrono::Utc>,
+        ) -> AppResult<Option<BootstrapPromotion>> {
+            unimplemented!("promote_bootstrap_admin not exercised in these tests")
         }
     }
 
@@ -166,9 +287,17 @@ fn user_with_chat_id(chat_id: i64) -> User {
         last_chat_id: Some(chat_id),
         telegram_username: None,
         full_name: Some("Test User".to_owned()),
+        first_name: Some("Test".to_owned()),
+        last_name: Some("User".to_owned()),
         linked_employee_id: None,
         is_employee: false,
         role: UserRole::User,
+        onboarding_state: OnboardingState::Completed,
+        onboarding_version: 1,
+        timezone: DEFAULT_USER_TIMEZONE.to_owned(),
+        quiet_hours_start_min: DEFAULT_QUIET_HOURS_START_MIN,
+        quiet_hours_end_min: DEFAULT_QUIET_HOURS_END_MIN,
+        deactivated_at: None,
         created_at: Utc::now(),
         updated_at: Utc::now(),
     }
@@ -196,10 +325,8 @@ async fn given_bot_blocked_error_when_delivering_then_permanently_fails_without_
     // mark_retry_pending must NOT be called
     notif_repo.expect_mark_retry_pending().never();
 
-    let mut user_repo = MockUserRepo::new();
-    user_repo
-        .expect_find_by_id()
-        .returning(|_| Ok(Some(user_with_chat_id(42))));
+    let user_repo = MockUserRepo::new();
+    user_repo.set_find_by_id(|_| Ok(Some(user_with_chat_id(42))));
 
     let mut task_repo = MockTaskRepo::new();
     task_repo.expect_find_by_id().returning(|_| Ok(None));
@@ -245,10 +372,8 @@ async fn given_transient_error_on_first_attempt_when_delivering_then_schedules_r
         .times(1)
         .returning(|_, _, _| Ok(()));
 
-    let mut user_repo = MockUserRepo::new();
-    user_repo
-        .expect_find_by_id()
-        .returning(|_| Ok(Some(user_with_chat_id(42))));
+    let user_repo = MockUserRepo::new();
+    user_repo.set_find_by_id(|_| Ok(Some(user_with_chat_id(42))));
 
     let mut task_repo = MockTaskRepo::new();
     task_repo.expect_find_by_id().returning(|_| Ok(None));
@@ -293,10 +418,8 @@ async fn given_transient_error_on_last_attempt_when_delivering_then_permanently_
         .returning(|_, _| Ok(()));
     notif_repo.expect_mark_retry_pending().never();
 
-    let mut user_repo = MockUserRepo::new();
-    user_repo
-        .expect_find_by_id()
-        .returning(|_| Ok(Some(user_with_chat_id(42))));
+    let user_repo = MockUserRepo::new();
+    user_repo.set_find_by_id(|_| Ok(Some(user_with_chat_id(42))));
 
     let mut task_repo = MockTaskRepo::new();
     task_repo.expect_find_by_id().returning(|_| Ok(None));

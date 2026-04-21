@@ -8,8 +8,21 @@ use tokio_util::sync::CancellationToken;
 use crate::application::use_cases::enqueue_daily_summaries::EnqueueDailySummariesUseCase;
 use crate::application::use_cases::enqueue_task_reminders::EnqueueTaskRemindersUseCase;
 use crate::application::use_cases::process_notifications::ProcessNotificationsUseCase;
+use crate::application::use_cases::process_recurrence_rules::ProcessRecurrenceRulesUseCase;
 use crate::application::use_cases::sync_employees::SyncEmployeesUseCase;
+use crate::application::use_cases::update_sla_states::UpdateSlaStatesUseCase;
 use crate::config::SchedulerConfig;
+
+/// Interval between SLA escalation scans.  Five minutes is a reasonable
+/// upper bound for how stale the `sla_state` column can be — short enough
+/// to catch transitions before the next morning standup, long enough to
+/// avoid hammering SQLite on idle systems.
+const SLA_CHECK_INTERVAL: Duration = Duration::from_secs(5 * 60);
+
+/// Interval between recurrence-rule scheduler ticks.  One minute means
+/// CRON expressions can fire with ≤ 60-second jitter, which is acceptable
+/// for task-management workflows.
+const RECURRENCE_CHECK_INTERVAL: Duration = Duration::from_secs(60);
 
 pub struct BackgroundJobs {
     cancellation_token: CancellationToken,
@@ -23,6 +36,8 @@ impl BackgroundJobs {
         process_notifications_use_case: Arc<ProcessNotificationsUseCase>,
         enqueue_task_reminders_use_case: Arc<EnqueueTaskRemindersUseCase>,
         enqueue_daily_summaries_use_case: Arc<EnqueueDailySummariesUseCase>,
+        update_sla_states_use_case: Arc<UpdateSlaStatesUseCase>,
+        process_recurrence_rules_use_case: Arc<ProcessRecurrenceRulesUseCase>,
     ) -> Self {
         let cancellation_token = CancellationToken::new();
         let deadline_reminders_use_case = enqueue_task_reminders_use_case.clone();
@@ -94,6 +109,29 @@ impl BackgroundJobs {
                     async move {
                         if let Err(error) = enqueue_daily_summaries_use_case.execute().await {
                             tracing::error!(code = error.code(), "daily_summary_enqueue_failed");
+                        }
+                    }
+                },
+            ),
+            spawn_interval_job(cancellation_token.clone(), SLA_CHECK_INTERVAL, move || {
+                let uc = update_sla_states_use_case.clone();
+                async move {
+                    if let Err(error) = uc.execute().await {
+                        tracing::error!(code = error.code(), "sla_escalation_scan_failed");
+                    }
+                }
+            }),
+            spawn_interval_job(
+                cancellation_token.clone(),
+                RECURRENCE_CHECK_INTERVAL,
+                move || {
+                    let uc = process_recurrence_rules_use_case.clone();
+                    async move {
+                        if let Err(error) = uc.execute().await {
+                            tracing::error!(
+                                code = error.code(),
+                                "recurrence_rules_processing_failed"
+                            );
                         }
                     }
                 },

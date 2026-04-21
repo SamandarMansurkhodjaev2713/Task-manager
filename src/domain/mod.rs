@@ -1,10 +1,17 @@
 pub mod audit;
 pub mod comment;
+pub mod deadline;
 pub mod employee;
 pub mod errors;
 pub mod message;
 pub mod name_matching;
 pub mod notification;
+pub mod notification_preferences;
 pub mod parsing;
+pub mod person_name;
+pub mod recurrence;
+pub mod sla;
 pub mod task;
 pub mod user;
+pub mod voice;
+pub mod voice_transcript;

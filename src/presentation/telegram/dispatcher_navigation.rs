@@ -77,12 +77,36 @@ pub(crate) async fn show_settings(
     chat_id: ChatId,
     actor: &User,
 ) -> Result<(), teloxide::RequestError> {
+    // Profile analytics (Phase 12): fetch the actor's personal task stats
+    // on a best-effort basis so we can inline them into the profile screen.
+    // Analytics MUST NOT block rendering the profile itself — if the stats
+    // call fails, we fall back to the plain profile text and log the
+    // failure for observability.
+    let stats = match state
+        .collect_stats_use_case
+        .execute(
+            actor,
+            crate::application::use_cases::collect_stats::StatsScope::Personal,
+        )
+        .await
+    {
+        Ok(view) => Some(view),
+        Err(error) => {
+            tracing::warn!(
+                error_code = error.code(),
+                error = %error,
+                "profile analytics: personal stats unavailable, rendering profile without them",
+            );
+            None
+        }
+    };
+
     send_screen(
         bot,
         state,
         chat_id,
         ScreenDescriptor::Settings,
-        &ui::settings_text(actor),
+        &ui::settings_text_with_stats(actor, stats.as_ref()),
         ui::main_menu_keyboard(actor),
     )
     .await
@@ -135,7 +159,7 @@ pub(crate) async fn show_task_list(
             )
             .await
         }
-        Err(error) => send_error(bot, chat_id.0, error).await,
+        Err(error) => send_error(bot, state, chat_id.0, error).await,
     }
 }
 
@@ -162,7 +186,7 @@ pub(crate) async fn show_stats(
             )
             .await
         }
-        Err(error) => send_error(bot, chat_id.0, error).await,
+        Err(error) => send_error(bot, state, chat_id.0, error).await,
     }
 }
 
@@ -173,7 +197,7 @@ pub(crate) async fn sync_employees(
     actor: &User,
 ) -> Result<(), teloxide::RequestError> {
     if let Err(error) = RoleAuthorizationPolicy::ensure_can_sync_employees(actor) {
-        return send_error(bot, chat_id.0, error).await;
+        return send_error(bot, state, chat_id.0, error).await;
     }
 
     match state.sync_employees_use_case.execute().await {
@@ -188,7 +212,7 @@ pub(crate) async fn sync_employees(
             )
             .await
         }
-        Err(error) => send_error(bot, chat_id.0, error).await,
+        Err(error) => send_error(bot, state, chat_id.0, error).await,
     }
 }
 

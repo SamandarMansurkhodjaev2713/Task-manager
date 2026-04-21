@@ -71,7 +71,7 @@ pub(crate) async fn choose_clarified_assignee(
                     )
                     .await
                 }
-                Err(error) => send_error(bot, chat_id.0, error).await,
+                Err(error) => send_error(bot, state, chat_id.0, error).await,
             }
         }
         PendingAssigneeSelection::Reassign(pending) => {
@@ -146,7 +146,7 @@ pub(crate) async fn choose_clarified_assignee(
                     )
                     .await
                 }
-                Err(error) => send_error(bot, chat_id.0, error).await,
+                Err(error) => send_error(bot, state, chat_id.0, error).await,
             }
         }
     }
@@ -213,7 +213,7 @@ pub(crate) async fn create_without_assignee_after_clarification(
             )
             .await
         }
-        Err(error) => send_error(bot, chat_id.0, error).await,
+        Err(error) => send_error(bot, state, chat_id.0, error).await,
     }
 }
 

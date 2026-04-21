@@ -152,7 +152,7 @@ pub(crate) async fn show_task_details_with_notice(
             )
             .await
         }
-        Err(error) => send_error(bot, context.chat_id.0, error).await,
+        Err(error) => send_error(bot, state, context.chat_id.0, error).await,
     }
 }
 
@@ -182,7 +182,7 @@ pub(crate) async fn confirm_task_cancel(
             )
             .await
         }
-        Err(error) => send_error(bot, chat_id.0, error).await,
+        Err(error) => send_error(bot, state, chat_id.0, error).await,
     }
 }
 
@@ -215,7 +215,7 @@ pub(crate) async fn update_task_status(
             )
             .await
         }
-        Err(error) => send_error(bot, chat_id.0, error).await,
+        Err(error) => send_error(bot, state, chat_id.0, error).await,
     }
 }
 
@@ -243,6 +243,6 @@ pub(crate) async fn show_delivery_help(
             )
             .await
         }
-        Err(error) => send_error(bot, chat_id.0, error).await,
+        Err(error) => send_error(bot, state, chat_id.0, error).await,
     }
 }
