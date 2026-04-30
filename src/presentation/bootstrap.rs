@@ -3,7 +3,7 @@ use std::sync::Arc;
 use secrecy::ExposeSecret;
 use teloxide::Bot;
 
-use crate::application::ports::repositories::FeatureFlagRepository;
+use crate::application::ports::repositories::{EmployeeRepository, FeatureFlagRepository};
 use crate::application::ports::services::TelegramNotifier;
 use crate::application::use_cases::add_task_comment::AddTaskCommentUseCase;
 use crate::application::use_cases::admin::AdminUseCase;
@@ -66,6 +66,28 @@ pub async fn run_application(config: AppConfig) -> AppResult<()> {
 
     let user_repository = Arc::new(SqliteUserRepository::new(pool.clone()));
     let employee_repository = Arc::new(SqliteEmployeeRepository::new(pool.clone()));
+
+    // ── One-shot employee reset ──────────────────────────────────────────
+    // When the operator sets `RESET_EMPLOYEES_ON_STARTUP=true`, wipe the
+    // employee directory before doing anything else.  This must run BEFORE
+    // the initial Sheets/CSV sync below so we don't immediately re-import
+    // the data we are trying to clear.
+    if config.bot.reset_employees_on_startup {
+        match EmployeeRepository::reset_all(employee_repository.as_ref()).await {
+            Ok(deleted) => tracing::warn!(
+                deleted,
+                "RESET_EMPLOYEES_ON_STARTUP=true: employee directory wiped clean. \
+                 Set the flag back to false to avoid wiping on the next restart."
+            ),
+            Err(error) => {
+                let code = error.code();
+                tracing::error!(
+                    code,
+                    "RESET_EMPLOYEES_ON_STARTUP=true but the wipe failed; continuing with the existing data"
+                );
+            }
+        }
+    }
     let task_repository = Arc::new(SqliteTaskRepository::new(pool.clone()));
     let notification_repository = Arc::new(SqliteNotificationRepository::new(pool.clone()));
     let audit_log_repository = Arc::new(SqliteAuditLogRepository::new(pool.clone()));
@@ -293,7 +315,7 @@ pub async fn run_application(config: AppConfig) -> AppResult<()> {
     ));
     let enqueue_daily_summaries_use_case = Arc::new(EnqueueDailySummariesUseCase::new(
         clock.clone(),
-        user_repository,
+        user_repository.clone(),
         task_repository.clone(),
         notification_repository.clone(),
     ));
@@ -336,6 +358,7 @@ pub async fn run_application(config: AppConfig) -> AppResult<()> {
         admin_nonce_store: AdminNonceStore::new(config.security.admin_nonce_ttl_seconds),
         assignee_resolver,
         sheets_write_back,
+        user_repository: user_repository.clone(),
         register_user_use_case,
         onboarding_use_case,
         create_task_use_case,

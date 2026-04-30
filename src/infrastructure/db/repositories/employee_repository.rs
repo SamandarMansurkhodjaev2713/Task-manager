@@ -207,6 +207,40 @@ impl EmployeeRepository for SqliteEmployeeRepository {
         Ok(row.into())
     }
 
+    async fn reset_all(&self) -> AppResult<u64> {
+        let mut transaction = self.pool.begin().await.map_err(database_error)?;
+
+        // Count up-front so the caller can log a meaningful number.
+        let pre_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM employees")
+            .fetch_one(&mut *transaction)
+            .await
+            .map_err(database_error)?;
+
+        // Two FK pointers do NOT have ON DELETE SET NULL — we must clear
+        // them manually before wiping `employees`.  Migrations 016
+        // already cascaded the rest (person_trigrams, pending_sheet_writes,
+        // assignee_history, aliases) via ON DELETE CASCADE.
+        sqlx::query("UPDATE tasks SET assigned_to_employee_id = NULL WHERE assigned_to_employee_id IS NOT NULL")
+            .execute(&mut *transaction)
+            .await
+            .map_err(database_error)?;
+        sqlx::query(
+            "UPDATE users SET linked_employee_id = NULL WHERE linked_employee_id IS NOT NULL",
+        )
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+
+        sqlx::query("DELETE FROM employees")
+            .execute(&mut *transaction)
+            .await
+            .map_err(database_error)?;
+
+        transaction.commit().await.map_err(database_error)?;
+
+        Ok(pre_count.0.max(0) as u64)
+    }
+
     /// Counts non-terminal (active) tasks assigned to this employee.
     ///
     /// Active = status NOT IN ('completed', 'cancelled').

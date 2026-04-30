@@ -83,7 +83,7 @@ pub(crate) async fn register_actor(
     // (or does not yet exist), we route *all* traffic through the onboarding
     // FSM until `onboarding_state = completed`.  Legacy registration remains
     // intact for already-onboarded users and for task-recovery.
-    match run_onboarding_gate(bot, state, incoming_message).await? {
+    let already_onboarded = match run_onboarding_gate(bot, state, incoming_message).await? {
         // On the exact update that finished onboarding we MUST NOT let the
         // dispatcher fall through: the user's message payload (e.g. their
         // last_name) would otherwise be reinterpreted as a task input.  The
@@ -92,9 +92,70 @@ pub(crate) async fn register_actor(
         OnboardingGateResult::JustCompleted | OnboardingGateResult::InProgress => {
             return Ok(RegistrationResult::ConsumedByOnboarding)
         }
-        OnboardingGateResult::NotApplicable => {}
+        // The gate did its own `find_by_telegram_id` so we get the user row
+        // back here for free.  Skip the slow path entirely for ~99% of
+        // updates (every Telegram message from an already-registered user
+        // hits this branch).
+        OnboardingGateResult::AlreadyOnboarded(user) => user,
+    };
+
+    // ── Fast path ────────────────────────────────────────────────────────
+    // For an already-onboarded user we avoid running the full
+    // `RegisterUserUseCase` pipeline (which does a redundant
+    // `find_by_telegram_id`, an `upsert_from_message` *write*, and a
+    // pending-task recovery scan) on every single Telegram update.  Those
+    // operations only need to fire on an explicit `/start` retry — which
+    // happens during onboarding (not here) or when the user deliberately
+    // re-runs the wizard.  Skipping them turns each subsequent update
+    // from ~5 SQL round-trips into 1.
+    {
+        let actor = already_onboarded;
+        let is_start = is_explicit_start_command(incoming_message);
+        if !is_start {
+            // Authoritative deactivation gate.  Cheap: it's a single field
+            // check on the row we already have.
+            if actor.deactivated_at.is_some() {
+                tracing::info!(
+                    telegram_id = actor.telegram_id,
+                    "deactivated account attempted an action — request blocked"
+                );
+                let _ = bot
+                    .send_message(
+                        teloxide::types::ChatId(incoming_message.chat_id),
+                        "⛔ Ваш аккаунт деактивирован.\n\
+                         Обратитесь к администратору для восстановления доступа.",
+                    )
+                    .await;
+                return Ok(RegistrationResult::Aborted);
+            }
+            // Lazily refresh `last_chat_id` if the user is messaging us
+            // from a different chat than we last saw — fire-and-forget so
+            // the user never waits on the write.  In the steady state
+            // (same chat as before) this is a 0-byte no-op.
+            if actor.last_chat_id != Some(incoming_message.chat_id) {
+                if let Some(user_id) = actor.id {
+                    let repo = state.user_repository.clone();
+                    let chat_id = incoming_message.chat_id;
+                    let now = incoming_message.timestamp;
+                    tokio::spawn(async move {
+                        if let Err(error) = repo.touch_last_chat_id(user_id, chat_id, now).await {
+                            tracing::warn!(
+                                code = error.code(),
+                                user_id,
+                                "background touch_last_chat_id failed; will retry on next message"
+                            );
+                        }
+                    });
+                }
+            }
+            return Ok(RegistrationResult::Ready(actor));
+        }
+        // Explicit `/start` from an existing user — fall through to the
+        // full pipeline so they can retry employee linking.
     }
 
+    // ── Slow path ────────────────────────────────────────────────────────
+    // Reached only for brand-new users and explicit `/start` retries.
     match state
         .register_user_use_case
         .preview_linking(incoming_message)
@@ -173,8 +234,20 @@ enum OnboardingGateResult {
     JustCompleted,
     /// Onboarding is still in progress; reply was already sent.
     InProgress,
-    /// The user is fully onboarded and this update is not onboarding-related.
-    NotApplicable,
+    /// The user is fully onboarded.  The gate already loaded the row via
+    /// `find_by_telegram_id`, so we hand it back to the caller — that lets
+    /// the dispatcher fast-path skip a second lookup AND the entire
+    /// `RegisterUserUseCase` pipeline.  This is the hot-path branch.
+    AlreadyOnboarded(Box<User>),
+}
+
+/// Returns `true` when the incoming message is an explicit `/start` command,
+/// which signals that the user wants to retry the full registration
+/// pipeline (employee linking + orphan-task recovery).
+fn is_explicit_start_command(message: &IncomingMessage) -> bool {
+    message
+        .text_payload()
+        .is_some_and(|payload| payload.trim_start().starts_with("/start"))
 }
 
 async fn run_onboarding_gate(
@@ -188,13 +261,17 @@ async fn run_onboarding_gate(
         .await
         .unwrap_or_default();
 
-    // Already fully onboarded with first/last name — legacy path.
+    // Already fully onboarded with first/last name — fast-path branch.
+    // Hand the row back to the caller so the dispatcher does not have to
+    // do a second `find_by_telegram_id`.
     if let Some(user) = existing.as_ref() {
         if user.onboarding_state == OnboardingState::Completed
             && user.first_name.as_deref().is_some_and(|v| !v.is_empty())
             && user.last_name.as_deref().is_some_and(|v| !v.is_empty())
         {
-            return Ok(OnboardingGateResult::NotApplicable);
+            return Ok(OnboardingGateResult::AlreadyOnboarded(Box::new(
+                user.clone(),
+            )));
         }
     }
 
@@ -255,7 +332,7 @@ async fn run_onboarding_gate(
             // ("Некорректный запрос. Проверьте данные и попробуйте снова.")
             // after the welcome screen.  We now return `JustCompleted` so the
             // caller stops immediately.  The next update will load the user
-            // normally and fall through `NotApplicable` into business logic.
+            // normally and fall through `AlreadyOnboarded` into business logic.
             let _ = user;
             Ok(OnboardingGateResult::JustCompleted)
         }

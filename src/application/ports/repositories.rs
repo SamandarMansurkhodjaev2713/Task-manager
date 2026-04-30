@@ -28,6 +28,22 @@ pub trait UserRepository: Send + Sync {
     async fn find_by_linked_employee_id(&self, employee_id: i64) -> AppResult<Option<User>>;
     async fn list_with_chat_id(&self) -> AppResult<Vec<User>>;
 
+    /// Lightweight write used by the dispatcher fast-path: refresh
+    /// `last_chat_id` (and `updated_at`) only — does **not** touch any
+    /// other column.  Used in lieu of the full `upsert_from_message` on
+    /// every Telegram update from an already-onboarded user, which was
+    /// the dominant source of per-message latency.
+    ///
+    /// Callers should compare the in-memory `User.last_chat_id` to the
+    /// incoming chat first and skip this call entirely when nothing has
+    /// changed.
+    async fn touch_last_chat_id(
+        &self,
+        user_id: i64,
+        chat_id: i64,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> AppResult<()>;
+
     /// Creates or resumes an onboarding session for the given Telegram user.
     /// Called at the very first `/start` — does NOT populate first/last name.
     async fn ensure_onboarding_session(
@@ -178,6 +194,25 @@ pub trait EmployeeRepository: Send + Sync {
         telegram_username: Option<&str>,
         now: DateTime<Utc>,
     ) -> AppResult<Employee>;
+
+    /// Wipes the entire employee directory in a single transaction.
+    ///
+    /// Used by the optional `RESET_EMPLOYEES_ON_STARTUP=true` boot flag
+    /// when the operator wants to start over from a clean slate.  All
+    /// dependent rows that hold a foreign key into `employees` are first
+    /// nulled (`tasks.assigned_to_employee_id`, `users.linked_employee_id`)
+    /// so the cascading `DELETE` cannot fail on FK constraints.
+    ///
+    /// Tables wiped:
+    ///   * `employees`            (target)
+    ///   * `person_trigrams`      (CASCADE — fuzzy matching index)
+    ///   * `pending_sheet_writes` (CASCADE — outbox queue)
+    ///   * `assignee_history`    (CASCADE — past task->employee links)
+    ///   * `aliases`             (CASCADE — diminutive-name aliases)
+    ///
+    /// Returns the number of employee rows that existed before the
+    /// reset so the operator can see at a glance how big the wipe was.
+    async fn reset_all(&self) -> AppResult<u64>;
 
     /// Returns the current workload snapshot for `employee_id`: how many
     /// non-terminal tasks are assigned to them, and how many of those are

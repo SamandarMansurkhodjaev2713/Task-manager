@@ -103,6 +103,13 @@ pub struct SchedulerConfig {
 #[derive(Debug, Clone, Serialize)]
 pub struct BotBehaviorConfig {
     pub rate_limit_per_minute: NonZeroU32,
+    /// Operator switch: when `true`, the bootstrap path wipes the entire
+    /// employee directory at startup before doing anything else.  The flag
+    /// is **one-shot per restart** — leave it `false` in normal operation
+    /// and set to `true` only for the boot you want to reset.  Persisting
+    /// it as `true` will wipe employees on every restart, which is almost
+    /// certainly not what you want in production.
+    pub reset_employees_on_startup: bool,
 }
 
 /// Security-oriented bootstrapping: which Telegram IDs become admins on
@@ -210,6 +217,7 @@ impl AppConfig {
                     "RATE_LIMIT_PER_MINUTE",
                     DEFAULT_RATE_LIMIT_PER_MINUTE,
                 )?,
+                reset_employees_on_startup: optional_bool("RESET_EMPLOYEES_ON_STARTUP", false),
             },
             security: SecurityConfig {
                 admin_ids: parse_admin_ids(optional_env("TELEGRAM_ADMIN_IDS").as_deref())?,
@@ -288,6 +296,21 @@ fn optional_secret(name: &'static str) -> Option<SecretString> {
 fn is_configured_value(value: &str) -> bool {
     let trimmed = value.trim();
     !trimmed.is_empty() && trimmed != "replace_me" && trimmed != "local_placeholder"
+}
+
+/// Parses an optional boolean ENV variable.  Accepts the common truthy
+/// spellings `"true"`, `"1"`, `"yes"`, `"on"` (case-insensitive).  Returns
+/// `default` when the variable is unset or empty; treats anything else
+/// (including "false", "0", "no", "off", or garbage) as `false` so that
+/// typos can never silently flip an opt-in safety switch.
+fn optional_bool(name: &'static str, default: bool) -> bool {
+    let Some(raw) = optional_env(name) else {
+        return default;
+    };
+    matches!(
+        raw.to_ascii_lowercase().as_str(),
+        "true" | "1" | "yes" | "on"
+    )
 }
 
 fn non_zero_u32(name: &'static str, default: u32) -> AppResult<NonZeroU32> {

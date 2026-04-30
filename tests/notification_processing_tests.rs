@@ -118,6 +118,15 @@ mod mock_impls {
             unimplemented!("list_with_chat_id not exercised in these tests")
         }
 
+        async fn touch_last_chat_id(
+            &self,
+            _user_id: i64,
+            _chat_id: i64,
+            _now: chrono::DateTime<chrono::Utc>,
+        ) -> AppResult<()> {
+            unimplemented!("touch_last_chat_id not exercised in these tests")
+        }
+
         async fn ensure_onboarding_session(
             &self,
             _telegram_id: i64,

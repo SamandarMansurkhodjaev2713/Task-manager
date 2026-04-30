@@ -6,7 +6,7 @@ use teloxide::prelude::{CallbackQuery, Dispatcher, Message, Update};
 use teloxide::types::ChatId;
 use teloxide::Bot;
 
-use crate::application::ports::repositories::SecurityAuditLogRepository;
+use crate::application::ports::repositories::{SecurityAuditLogRepository, UserRepository};
 use crate::application::use_cases::add_task_comment::AddTaskCommentUseCase;
 use crate::application::use_cases::admin::AdminUseCase;
 use crate::application::use_cases::assignee_resolution::AssigneeResolver;
@@ -113,6 +113,12 @@ pub struct TelegramRuntime {
     /// Sheets write-back use case.  Always present: when write-back is
     /// disabled it holds a no-op instance so callers never check for `None`.
     pub sheets_write_back: Arc<SheetsWriteBackUseCase>,
+    /// Direct user-repository handle.  Used by the dispatcher fast-path
+    /// (`register_actor`) to avoid running the full registration pipeline
+    /// for every Telegram update from an already-onboarded user.  The
+    /// pipeline used to do an `upsert_from_message` write + a recovery
+    /// scan on every keystroke, which is what made the bot feel sluggish.
+    pub user_repository: Arc<dyn UserRepository>,
     pub register_user_use_case: Arc<RegisterUserUseCase>,
     pub onboarding_use_case: Arc<OnboardingUseCase>,
     pub create_task_use_case: Arc<CreateTaskFromMessageUseCase>,

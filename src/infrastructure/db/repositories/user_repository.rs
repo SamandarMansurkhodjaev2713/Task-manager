@@ -92,6 +92,32 @@ impl UserRepository for SqliteUserRepository {
         row.map(TryInto::try_into).transpose()
     }
 
+    async fn touch_last_chat_id(
+        &self,
+        user_id: i64,
+        chat_id: i64,
+        now: DateTime<Utc>,
+    ) -> AppResult<()> {
+        // The WHERE clause guards against pointless writes: SQLite still
+        // bumps the row version on a no-op UPDATE, so we filter at SQL
+        // level.  Callers should ALSO short-circuit in memory; this is
+        // the second line of defence.
+        sqlx::query(
+            "UPDATE users
+                SET last_chat_id = ?, updated_at = ?
+              WHERE id = ?
+                AND (last_chat_id IS NULL OR last_chat_id != ?)",
+        )
+        .bind(chat_id)
+        .bind(now)
+        .bind(user_id)
+        .bind(chat_id)
+        .execute(&self.pool)
+        .await
+        .map_err(database_error)?;
+        Ok(())
+    }
+
     async fn find_by_username(&self, username: &str) -> AppResult<Option<User>> {
         let query =
             format!("SELECT {USER_COLUMNS} FROM users WHERE lower(telegram_username) = lower(?)");
