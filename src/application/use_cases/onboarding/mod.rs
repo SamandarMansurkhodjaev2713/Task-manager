@@ -173,9 +173,27 @@ impl OnboardingUseCase {
             .last_name
             .clone()
             .ok_or_else(|| invalid_state_error(&user))?;
+
+        // When the user explicitly opted out of linking to a Sheets entry,
+        // create a `bot_registered` employee so they remain addressable for
+        // task assignment even without a Sheets record.
         let employee_id_to_link = match decision {
             RegistrationLinkDecision::EmployeeId(id) => Some(id),
-            _ => None,
+            RegistrationLinkDecision::ContinueUnlinked => {
+                let full_name = format!("{first} {last}");
+                let username = message.sender_username.as_deref();
+                match self
+                    .employee_repository
+                    .upsert_bot_registered(&full_name, username, ctx.now)
+                    .await
+                {
+                    Ok(employee) => employee.id,
+                    // Best-effort: if creation fails (e.g. DB error), continue
+                    // onboarding without a link rather than blocking the user.
+                    Err(_) => None,
+                }
+            }
+            RegistrationLinkDecision::Auto => None,
         };
 
         // Defence against torn persistence: if the session row somehow lacks
@@ -278,9 +296,25 @@ impl OnboardingUseCase {
         // `Ready(EmployeeId | ContinueUnlinked)` — finalise right away.
         match self.register_user_use_case.preview_linking(message).await? {
             RegistrationLinkPreview::Ready(decision) => {
+                // When the auto-resolver says "continue unlinked" (name not found
+                // in Sheets), create a `bot_registered` employee so the user is
+                // still discoverable for task assignment.
                 let employee_id_to_link = match decision {
                     RegistrationLinkDecision::EmployeeId(id) => Some(id),
-                    _ => None,
+                    RegistrationLinkDecision::ContinueUnlinked => {
+                        let full_name = name.display();
+                        let username = message.sender_username.as_deref();
+                        match self
+                            .employee_repository
+                            .upsert_bot_registered(&full_name, username, ctx.now)
+                            .await
+                        {
+                            Ok(employee) => employee.id,
+                            // Best-effort: don't block onboarding on a DB error.
+                            Err(_) => None,
+                        }
+                    }
+                    RegistrationLinkDecision::Auto => None,
                 };
                 let updated_id = updated.id.ok_or_else(|| invalid_state_error(&updated))?;
                 let completed_user = self

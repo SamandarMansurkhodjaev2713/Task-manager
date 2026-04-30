@@ -15,6 +15,8 @@ pub mod reassign_task;
 pub mod register_user;
 pub mod report_task_blocker;
 pub mod search_tasks;
+pub mod seed_aliases;
+pub mod sheets_write_back;
 pub mod sync_employees;
 pub mod update_sla_states;
 pub mod update_task_status;

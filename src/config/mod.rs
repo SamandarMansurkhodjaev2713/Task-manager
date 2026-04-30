@@ -44,14 +44,22 @@ pub struct TelegramConfig {
 
 #[derive(Debug, Clone, Validate, Serialize)]
 pub struct GoogleSheetsConfig {
-    #[validate(length(min = 1))]
     pub spreadsheet_id: String,
     #[validate(length(min = 1))]
     pub range: String,
+    /// Optional local CSV fallback for test/demo deployments where Google
+    /// Sheets API credentials are intentionally absent.
+    pub local_csv_path: Option<String>,
     #[serde(skip_serializing)]
     pub api_key: Option<SecretString>,
     #[serde(skip_serializing)]
     pub bearer_token: Option<SecretString>,
+    /// Optional A1-notation range to append new `bot_registered` employees
+    /// back into the spreadsheet (e.g. `"Employees!A:G"`).
+    ///
+    /// Write-back is only active when this AND `bearer_token` are both
+    /// configured — the read-only API key is not sufficient for writes.
+    pub write_back_range: Option<String>,
 }
 
 #[derive(Debug, Clone, Validate, Serialize)]
@@ -161,11 +169,13 @@ impl AppConfig {
                 bot_token: SecretString::new(required_env("TELEGRAM_BOT_TOKEN")?.into()),
             },
             google_sheets: GoogleSheetsConfig {
-                spreadsheet_id: required_env("GOOGLE_SHEETS_ID")?,
+                spreadsheet_id: optional_env("GOOGLE_SHEETS_ID").unwrap_or_default(),
                 range: optional_env("GOOGLE_SHEETS_RANGE")
                     .unwrap_or_else(|| "Employees!A:F".to_owned()),
+                local_csv_path: optional_env("LOCAL_EMPLOYEE_DIRECTORY_CSV_PATH"),
                 api_key: optional_secret("GOOGLE_SHEETS_API_KEY"),
                 bearer_token: optional_secret("GOOGLE_SHEETS_BEARER_TOKEN"),
+                write_back_range: optional_env("GOOGLE_SHEETS_WRITE_BACK_RANGE"),
             },
             gemini: GeminiConfig {
                 api_key: SecretString::new(required_env("GOOGLE_GEMINI_API_KEY")?.into()),
@@ -223,13 +233,14 @@ impl AppConfig {
             )
         })?;
 
+        let has_live_google_sheet = is_configured_value(&self.google_sheets.spreadsheet_id);
         let has_api_key = self.google_sheets.api_key.is_some();
         let has_bearer_token = self.google_sheets.bearer_token.is_some();
 
-        if !has_api_key && !has_bearer_token {
+        if has_live_google_sheet && !has_api_key && !has_bearer_token {
             return Err(AppError::schema_validation(
                 "GOOGLE_SHEETS_AUTH_MISSING",
-                "Either GOOGLE_SHEETS_API_KEY or GOOGLE_SHEETS_BEARER_TOKEN must be configured",
+                "Either GOOGLE_SHEETS_API_KEY or GOOGLE_SHEETS_BEARER_TOKEN must be configured when GOOGLE_SHEETS_ID is set",
                 json!({ "spreadsheet_id": self.google_sheets.spreadsheet_id }),
             ));
         }
@@ -272,6 +283,11 @@ fn optional_env(name: &'static str) -> Option<String> {
 
 fn optional_secret(name: &'static str) -> Option<SecretString> {
     optional_env(name).map(Into::into).map(SecretString::new)
+}
+
+fn is_configured_value(value: &str) -> bool {
+    let trimmed = value.trim();
+    !trimmed.is_empty() && trimmed != "replace_me" && trimmed != "local_placeholder"
 }
 
 fn non_zero_u32(name: &'static str, default: u32) -> AppResult<NonZeroU32> {
@@ -331,7 +347,7 @@ fn parse_admin_ids(raw: Option<&str>) -> AppResult<AdminIdSet> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_admin_ids;
+    use super::{is_configured_value, parse_admin_ids};
 
     #[test]
     fn given_none_when_parse_admin_ids_then_returns_empty_set() {
@@ -367,5 +383,14 @@ mod tests {
 
         let message = err.to_string();
         assert!(message.to_lowercase().contains("admin"));
+    }
+
+    #[test]
+    fn given_google_sheets_placeholder_when_checking_configured_value_then_treated_as_disabled() {
+        assert!(!is_configured_value(""));
+        assert!(!is_configured_value("   "));
+        assert!(!is_configured_value("replace_me"));
+        assert!(!is_configured_value("local_placeholder"));
+        assert!(is_configured_value("real-spreadsheet-id"));
     }
 }

@@ -100,7 +100,8 @@ pub fn list_text(title: &str, subtitle: &str, page: &TaskListPage) -> String {
 
     let mut lines = vec![title.to_owned(), subtitle.to_owned(), String::new()];
     for section in &page.sections {
-        lines.push(section.title.clone());
+        let count = section.tasks.len();
+        lines.push(format!("{} ({})", section.title, count));
         lines.push(String::new());
 
         for task in &section.tasks {

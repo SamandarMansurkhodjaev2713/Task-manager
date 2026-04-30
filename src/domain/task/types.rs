@@ -80,6 +80,25 @@ impl Display for TaskStatus {
     }
 }
 
+impl TaskStatus {
+    /// Human-readable Russian label for user-facing messages and notifications.
+    ///
+    /// `Display` intentionally keeps the snake_case form (used in DB, audit
+    /// log, and codec), so this separate method is the correct call-site for
+    /// any string that will be shown to end users.
+    pub fn display_ru(self) -> &'static str {
+        match self {
+            Self::Created => "создана",
+            Self::Sent => "отправлена исполнителю",
+            Self::InProgress => "в работе",
+            Self::Blocked => "заблокирована",
+            Self::InReview => "на проверке",
+            Self::Completed => "завершена",
+            Self::Cancelled => "отменена",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::TaskStatus;
@@ -115,5 +134,33 @@ mod tests {
     #[test]
     fn in_progress_is_not_terminal() {
         assert!(!TaskStatus::InProgress.is_terminal());
+    }
+
+    // ── display_ru tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn given_any_status_when_display_ru_then_returns_russian_not_snake_case() {
+        // Every status must have a Russian label distinct from its Debug/Display form.
+        for (status, expected) in [
+            (TaskStatus::Created, "создана"),
+            (TaskStatus::Sent, "отправлена исполнителю"),
+            (TaskStatus::InProgress, "в работе"),
+            (TaskStatus::Blocked, "заблокирована"),
+            (TaskStatus::InReview, "на проверке"),
+            (TaskStatus::Completed, "завершена"),
+            (TaskStatus::Cancelled, "отменена"),
+        ] {
+            assert_eq!(
+                status.display_ru(),
+                expected,
+                "display_ru for {status:?} must return '{expected}'"
+            );
+            // Ensure it's never the internal snake_case form
+            assert!(
+                !status.display_ru().contains('_'),
+                "display_ru must not contain underscores (got '{}')",
+                status.display_ru()
+            );
+        }
     }
 }

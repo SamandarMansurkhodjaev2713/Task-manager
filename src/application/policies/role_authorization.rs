@@ -142,6 +142,7 @@ impl RoleAuthorizationPolicy {
     pub const ADMIN_ROLE: UserRole = UserRole::Admin;
 
     pub fn ensure_can_view_task(actor: &User, task: &Task) -> AppResult<()> {
+        Self::ensure_active(actor)?;
         let actor_id = required_actor_id(actor, "view task status")?;
 
         if actor.role.is_manager_or_admin()
@@ -158,6 +159,7 @@ impl RoleAuthorizationPolicy {
     }
 
     pub fn ensure_can_comment(actor: &User, task: &Task) -> AppResult<()> {
+        Self::ensure_active(actor)?;
         let actor_id = required_actor_id(actor, "comment on a task")?;
 
         if actor.role.is_manager_or_admin()
@@ -174,6 +176,7 @@ impl RoleAuthorizationPolicy {
     }
 
     pub fn ensure_can_report_blocker(actor: &User, task: &Task) -> AppResult<()> {
+        Self::ensure_active(actor)?;
         let actor_id = required_actor_id(actor, "report a blocker")?;
 
         if actor.role.is_admin() || task.assigned_to_user_id == Some(actor_id) {
@@ -187,6 +190,7 @@ impl RoleAuthorizationPolicy {
     }
 
     pub fn ensure_can_reassign(actor: &User, task: &Task) -> AppResult<()> {
+        Self::ensure_active(actor)?;
         let actor_id = required_actor_id(actor, "reassign tasks")?;
         let can_reassign = actor.role.is_manager_or_admin()
             || task.created_by_user_id == actor_id
@@ -235,6 +239,7 @@ impl RoleAuthorizationPolicy {
         task: &Task,
         next_status: TaskStatus,
     ) -> AppResult<()> {
+        Self::ensure_active(actor)?;
         let actor_id = required_actor_id(actor, "change task status")?;
 
         if actor.role.is_admin() {
@@ -434,6 +439,55 @@ mod tests {
 
         RoleAuthorizationPolicy::ensure_can_manage_roles(&admin, &target)
             .expect("admin can manage others");
+    }
+
+    // ── Deactivation defence-in-depth tests ───────────────────────────────
+
+    #[test]
+    fn given_deactivated_user_when_changing_task_status_then_returns_account_deactivated() {
+        let mut actor = user(Some(1), UserRole::User);
+        actor.deactivated_at = Some(chrono::Utc::now());
+        let t = task(2, Some(1), TaskStatus::InProgress);
+
+        let err =
+            RoleAuthorizationPolicy::ensure_can_change_status(&actor, &t, TaskStatus::InReview)
+                .unwrap_err();
+
+        assert_eq!(err.code(), super::FORBIDDEN_ACCOUNT_DEACTIVATED);
+    }
+
+    #[test]
+    fn given_deactivated_user_when_commenting_then_returns_account_deactivated() {
+        let mut actor = user(Some(1), UserRole::User);
+        actor.deactivated_at = Some(chrono::Utc::now());
+        let t = task(2, Some(1), TaskStatus::InProgress);
+
+        let err = RoleAuthorizationPolicy::ensure_can_comment(&actor, &t).unwrap_err();
+
+        assert_eq!(err.code(), super::FORBIDDEN_ACCOUNT_DEACTIVATED);
+    }
+
+    #[test]
+    fn given_deactivated_user_when_reporting_blocker_then_returns_account_deactivated() {
+        let mut actor = user(Some(1), UserRole::User);
+        actor.deactivated_at = Some(chrono::Utc::now());
+        let t = task(2, Some(1), TaskStatus::InProgress);
+
+        let err = RoleAuthorizationPolicy::ensure_can_report_blocker(&actor, &t).unwrap_err();
+
+        assert_eq!(err.code(), super::FORBIDDEN_ACCOUNT_DEACTIVATED);
+    }
+
+    #[test]
+    fn given_deactivated_user_when_reassigning_then_returns_account_deactivated() {
+        let mut actor = user(Some(1), UserRole::User);
+        actor.deactivated_at = Some(chrono::Utc::now());
+        // Actor is the creator so they'd normally be allowed.
+        let t = task(1, Some(1), TaskStatus::InProgress);
+
+        let err = RoleAuthorizationPolicy::ensure_can_reassign(&actor, &t).unwrap_err();
+
+        assert_eq!(err.code(), super::FORBIDDEN_ACCOUNT_DEACTIVATED);
     }
 
     fn user(id: Option<i64>, role: UserRole) -> User {

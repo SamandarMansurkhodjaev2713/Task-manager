@@ -103,6 +103,22 @@ impl UserRepository for SqliteUserRepository {
         row.map(TryInto::try_into).transpose()
     }
 
+    async fn find_by_linked_employee_id(&self, employee_id: i64) -> AppResult<Option<User>> {
+        let query = format!(
+            "SELECT {USER_COLUMNS}
+             FROM users
+             WHERE linked_employee_id = ? AND deactivated_at IS NULL
+             ORDER BY id ASC
+             LIMIT 1"
+        );
+        let row = sqlx::query_as::<_, UserRow>(&query)
+            .bind(employee_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(database_error)?;
+        row.map(TryInto::try_into).transpose()
+    }
+
     async fn list_with_chat_id(&self) -> AppResult<Vec<User>> {
         let query = format!(
             "SELECT {USER_COLUMNS} FROM users WHERE last_chat_id IS NOT NULL ORDER BY id ASC"

@@ -200,6 +200,20 @@ impl CreateTaskFromMessageUseCase {
         self.assignee_resolver.resolve_for_creation(trimmed).await
     }
 
+    /// Returns the full name of the employee with the given ID, or `None` when
+    /// the ID is unknown.  Used by the guided-creation coordinator to populate
+    /// the display name in the draft after the user confirms a suggestion button
+    /// on the `GuidedAssigneeOptions` screen, so the confirmation step shows
+    /// "Abdullazi Zazizov" instead of the raw abbreviation the user typed.
+    pub async fn resolve_employee_name(&self, employee_id: i64) -> AppResult<Option<String>> {
+        Ok(self
+            .assignee_resolver
+            .resolve_employee_id(employee_id)
+            .await?
+            .employee
+            .map(|employee| employee.full_name))
+    }
+
     pub async fn transcribe_voice_message(&self, message: &IncomingMessage) -> AppResult<String> {
         match &message.content {
             MessageContent::Voice { voice } => self.speech_to_text_service.transcribe(voice).await,

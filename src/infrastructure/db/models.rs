@@ -3,11 +3,12 @@ use serde_json::Value;
 use sqlx::FromRow;
 use uuid::Uuid;
 
+use crate::application::ports::repositories::SheetsSyncRow;
 use crate::domain::audit::{
     AdminAuditEntry, AuditAction, AuditActionCode, AuditLogEntry, SecurityAuditEntry,
 };
 use crate::domain::comment::{CommentKind, TaskComment};
-use crate::domain::employee::Employee;
+use crate::domain::employee::{Employee, EmployeeAlias, EmployeeSource};
 use crate::domain::errors::{AppError, AppResult};
 use crate::domain::notification::{Notification, NotificationDeliveryState, NotificationType};
 use crate::domain::task::{MessageType, Task, TaskPriority, TaskStatus};
@@ -44,6 +45,7 @@ pub struct EmployeeRow {
     pub phone: Option<String>,
     pub department: Option<String>,
     pub is_active: i64,
+    pub source: String,
     pub synced_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -147,6 +149,65 @@ pub struct SecurityAuditLogRow {
     pub created_at: DateTime<Utc>,
 }
 
+// ── Migration 016 rows ────────────────────────────────────────────────────
+
+#[derive(Debug, FromRow)]
+pub struct AliasRow {
+    pub id: i64,
+    pub employee_id: i64,
+    pub alias: String,
+    pub created_by_user_id: Option<i64>,
+    pub created_at: DateTime<Utc>,
+}
+
+impl From<AliasRow> for EmployeeAlias {
+    fn from(row: AliasRow) -> Self {
+        Self {
+            id: Some(row.id),
+            employee_id: row.employee_id,
+            alias: row.alias,
+            created_by_user_id: row.created_by_user_id,
+            created_at: row.created_at,
+        }
+    }
+}
+
+#[derive(Debug, FromRow)]
+pub struct AssigneeHistoryRow {
+    pub id: i64,
+    pub creator_user_id: i64,
+    pub employee_id: i64,
+    pub last_used_at: DateTime<Utc>,
+    pub use_count: i64,
+}
+
+#[derive(Debug, FromRow)]
+pub struct PendingSheetWriteRow {
+    pub id: i64,
+    pub employee_id: i64,
+    pub telegram_id: i64,
+    pub full_name: String,
+    pub telegram_username: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub written_at: Option<DateTime<Utc>>,
+    pub last_error: Option<String>,
+    pub error_count: i64,
+}
+
+impl From<PendingSheetWriteRow> for SheetsSyncRow {
+    fn from(row: PendingSheetWriteRow) -> Self {
+        Self {
+            id: row.id,
+            employee_id: row.employee_id,
+            telegram_id: row.telegram_id,
+            full_name: row.full_name,
+            telegram_username: row.telegram_username,
+            created_at: row.created_at,
+            error_count: row.error_count as u32,
+        }
+    }
+}
+
 impl TryFrom<UserRow> for User {
     type Error = AppError;
 
@@ -186,10 +247,19 @@ impl From<EmployeeRow> for Employee {
             phone: value.phone,
             department: value.department,
             is_active: value.is_active != 0,
+            source: parse_employee_source(&value.source),
             synced_at: value.synced_at,
             created_at: value.created_at,
             updated_at: value.updated_at,
         }
+    }
+}
+
+fn parse_employee_source(value: &str) -> EmployeeSource {
+    match value {
+        "bot_registered" => EmployeeSource::BotRegistered,
+        // Unknown values fall back to the dominant source to stay forward-compatible.
+        _ => EmployeeSource::GoogleSheets,
     }
 }
 

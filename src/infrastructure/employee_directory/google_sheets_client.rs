@@ -8,7 +8,7 @@ use serde::Deserialize;
 
 use crate::application::ports::services::EmployeeDirectoryGateway;
 use crate::config::GoogleSheetsConfig;
-use crate::domain::employee::Employee;
+use crate::domain::employee::{Employee, EmployeeSource};
 use crate::domain::errors::{AppError, AppResult};
 use crate::infrastructure::http::circuit_breaker::CircuitBreaker;
 use crate::infrastructure::http::retry::retry_with_backoff;
@@ -133,6 +133,7 @@ impl EmployeeDirectoryGateway for GoogleSheetsEmployeeDirectory {
                         .get(5)
                         .map(|value| !value.trim().eq_ignore_ascii_case("false"))
                         .unwrap_or(true),
+                    source: EmployeeSource::GoogleSheets,
                     synced_at: Some(now),
                     created_at: now,
                     updated_at: now,

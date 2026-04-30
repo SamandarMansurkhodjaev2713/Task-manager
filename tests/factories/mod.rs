@@ -1,6 +1,6 @@
 use chrono::{NaiveDate, Utc};
 
-use telegram_task_bot::domain::employee::Employee;
+use telegram_task_bot::domain::employee::{Employee, EmployeeSource};
 use telegram_task_bot::domain::task::{MessageType, StructuredTaskDraft, Task};
 
 #[allow(dead_code)]
@@ -14,6 +14,7 @@ pub fn employee(full_name: &str, username: Option<&str>) -> Employee {
         phone: None,
         department: None,
         is_active: true,
+        source: EmployeeSource::GoogleSheets,
         synced_at: Some(now),
         created_at: now,
         updated_at: now,

@@ -2,7 +2,7 @@ use chrono::Utc;
 use tempfile::tempdir;
 
 use telegram_task_bot::application::ports::repositories::EmployeeRepository;
-use telegram_task_bot::domain::employee::Employee;
+use telegram_task_bot::domain::employee::{Employee, EmployeeSource};
 use telegram_task_bot::infrastructure::db::pool::connect;
 use telegram_task_bot::infrastructure::db::repositories::SqliteEmployeeRepository;
 
@@ -18,6 +18,7 @@ fn employee(full_name: &str, username: Option<&str>) -> Employee {
         phone: None,
         department: None,
         is_active: true,
+        source: EmployeeSource::GoogleSheets,
         synced_at: Some(now),
         created_at: now,
         updated_at: now,
@@ -118,10 +119,7 @@ async fn given_employee_without_username_when_upserted_twice_then_single_row_upd
 /// Rationale: without a Telegram username we have no stable identity key.
 /// Treating them as the same record keeps the sync idempotent: repeated syncs
 /// of the same source data always converge to a single row rather than growing
-/// unboundedly.  The far rarer case of two genuinely different people sharing an
-/// exact name AND neither having a username is a known limitation; the fix for
-/// C-2 (distinct-username employees no longer clobbering each other) covers the
-/// common real-world scenario.
+/// unboundedly.
 #[tokio::test]
 async fn given_two_no_username_employees_with_same_name_when_upsert_then_treated_as_same_record() {
     let repo = setup_repo().await;
@@ -145,4 +143,131 @@ async fn given_two_no_username_employees_with_same_name_when_upsert_then_treated
     );
     // The second entry's department wins (last-write-wins within the batch).
     assert_eq!(kozlov[0].department.as_deref(), Some("Engineering"));
+}
+
+// ─── Mixed source model tests ─────────────────────────────────────────────────
+
+/// `upsert_bot_registered` creates a new row tagged `bot_registered` when no
+/// employee with that username exists yet.
+#[tokio::test]
+async fn given_new_user_when_upsert_bot_registered_then_creates_row_with_correct_source() {
+    let repo = setup_repo().await;
+    let now = Utc::now();
+
+    let employee = repo
+        .upsert_bot_registered("Алина Смирнова", Some("alina_smirnova"), now)
+        .await
+        .expect("upsert should succeed");
+
+    assert_eq!(employee.full_name, "Алина Смирнова");
+    assert_eq!(
+        employee.telegram_username.as_deref(),
+        Some("alina_smirnova")
+    );
+    assert_eq!(
+        employee.source,
+        EmployeeSource::BotRegistered,
+        "new bot-registered employee must have BotRegistered source"
+    );
+    assert!(employee.id.is_some(), "inserted row must have a DB id");
+}
+
+/// When the same Telegram username already exists (e.g. from a prior Sheets sync),
+/// `upsert_bot_registered` returns the existing record without creating a duplicate.
+#[tokio::test]
+async fn given_existing_sheets_employee_when_upsert_bot_registered_then_returns_existing_no_duplicate(
+) {
+    let repo = setup_repo().await;
+    let now = Utc::now();
+
+    // Simulate prior Sheets sync
+    repo.upsert_many(&[employee("Борис Новиков", Some("boris_novikov"))])
+        .await
+        .expect("sheets sync");
+
+    // Onboarding completes without finding a link — bot tries to create one
+    let result = repo
+        .upsert_bot_registered("Борис Новиков", Some("boris_novikov"), now)
+        .await
+        .expect("upsert should succeed");
+
+    // Must return the EXISTING record (from Sheets), not a new duplicate
+    let all = repo.list_active().await.expect("list");
+    let boris: Vec<_> = all
+        .iter()
+        .filter(|e| e.telegram_username.as_deref() == Some("boris_novikov"))
+        .collect();
+    assert_eq!(
+        boris.len(),
+        1,
+        "must not create a duplicate row when username already exists"
+    );
+    // The returned record should be the Sheets-sourced one
+    assert_eq!(
+        result.source,
+        EmployeeSource::GoogleSheets,
+        "existing Sheets record must not be downgraded to BotRegistered"
+    );
+}
+
+/// `find_by_telegram_username` returns the employee when the username matches.
+#[tokio::test]
+async fn given_employee_with_username_when_find_by_telegram_username_then_returns_it() {
+    let repo = setup_repo().await;
+
+    repo.upsert_many(&[employee("Вера Зайцева", Some("vera_z"))])
+        .await
+        .expect("upsert");
+
+    let found = repo
+        .find_by_telegram_username("vera_z")
+        .await
+        .expect("find");
+
+    assert!(found.is_some(), "should find employee by username");
+    assert_eq!(found.unwrap().full_name, "Вера Зайцева");
+}
+
+/// `find_by_telegram_username` returns `None` when no employee has that username.
+#[tokio::test]
+async fn given_unknown_username_when_find_by_telegram_username_then_returns_none() {
+    let repo = setup_repo().await;
+
+    let found = repo
+        .find_by_telegram_username("ghost_user")
+        .await
+        .expect("find");
+
+    assert!(found.is_none(), "should return None for unknown username");
+}
+
+/// The Google Sheets sync upgrades a `bot_registered` row to `google_sheets`
+/// when the same username appears in the Sheets data.
+#[tokio::test]
+async fn given_bot_registered_employee_when_sheets_sync_then_source_upgraded_to_google_sheets() {
+    let repo = setup_repo().await;
+    let now = Utc::now();
+
+    // User registered via /start first
+    let bot_employee = repo
+        .upsert_bot_registered("Дмитрий Попов", Some("dmitry_popov"), now)
+        .await
+        .expect("bot upsert");
+    assert_eq!(bot_employee.source, EmployeeSource::BotRegistered);
+
+    // Later, the Sheets sync runs and finds the same username
+    let sheets_row = employee("Дмитрий Попов", Some("dmitry_popov"));
+    repo.upsert_many(&[sheets_row]).await.expect("sheets sync");
+
+    // The row must now be tagged google_sheets
+    let upgraded = repo
+        .find_by_telegram_username("dmitry_popov")
+        .await
+        .expect("find")
+        .expect("employee must still exist");
+    assert_eq!(
+        upgraded.source,
+        EmployeeSource::GoogleSheets,
+        "Sheets sync must upgrade bot_registered to google_sheets for the same username"
+    );
 }

@@ -1,5 +1,9 @@
 # Set `GIT_SHA` when building so `/version` matches the deployed revision, e.g.
 #   $env:GIT_SHA = (git rev-parse HEAD); docker compose build
+#
+# Phase 2 optional features (add to .env to activate):
+#   GOOGLE_SHEETS_WRITE_BACK_RANGE=Employees!A:G   # append bot-registered users back to the sheet
+#   GOOGLE_SHEETS_BEARER_TOKEN=<oauth_token>        # required for write-back (read-only API key is not sufficient)
 services:
   telegram-task-bot:
     build:
@@ -26,7 +30,6 @@ services:
       timeout: 5s
       start_period: 15s
       retries: 5
-    init: true
     read_only: true
     security_opt:
       - no-new-privileges:true
@@ -59,7 +62,8 @@ services:
       DATABASE_URL: sqlite:///tmp/tests.db
       RUST_BACKTRACE: "1"
       # Match `.env.example` defaults so integration tests see the same flag baseline as production.
-      FEATURE_FLAGS: onboarding_v2,admin_panel
+      # team_analytics is default-on since Phase 1 (managers always have access to stats).
+      FEATURE_FLAGS: onboarding_v2,admin_panel,team_analytics
     command: ["cargo", "test", "--workspace", "-j", "1"]
     restart: "no"
 

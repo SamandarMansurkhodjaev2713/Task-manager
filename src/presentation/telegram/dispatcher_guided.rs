@@ -103,8 +103,14 @@ impl<'a> GuidedCreateCoordinator<'a> {
     /// Confirms a specific employee during the guided Assignee step.
     ///
     /// Called when the user clicks a candidate button on the
-    /// `GuidedAssigneeOptions` screen.  Stores the employee ID in the draft
-    /// and advances to Description without re-running any fuzzy matching.
+    /// `GuidedAssigneeOptions` screen.  Stores both the employee ID and the
+    /// employee's full name in the draft, then advances to Description without
+    /// re-running any fuzzy matching.
+    ///
+    /// The full-name lookup is intentional: the draft carries only the raw
+    /// text the user typed (which may be an abbreviation like "ABD"), so we
+    /// fetch the canonical name here so the confirmation screen renders
+    /// "Abdullazi Zazizov" rather than the abbreviation.
     pub async fn confirm_assignee(
         &self,
         chat_id: ChatId,
@@ -115,6 +121,19 @@ impl<'a> GuidedCreateCoordinator<'a> {
         else {
             return self.fallback_to_create_menu(chat_id).await;
         };
+
+        // Resolve the employee's canonical display name.  On lookup failure
+        // we fall back gracefully — the assignee is still correctly wired
+        // via resolved_employee_id, the only thing that degrades is the label
+        // shown in the confirmation step.
+        if let Ok(Some(full_name)) = self
+            .state
+            .create_task_use_case
+            .resolve_employee_name(employee_id)
+            .await
+        {
+            draft.assignee = Some(full_name);
+        }
 
         draft.resolved_employee_id = Some(employee_id);
         draft.step = GuidedTaskStep::Description;
@@ -129,7 +148,7 @@ impl<'a> GuidedCreateCoordinator<'a> {
             chat_id,
             ScreenDescriptor::GuidedStep(GuidedTaskStep::Description),
             &ui::guided_description_prompt(),
-            ui::create_menu_keyboard(),
+            ui::guided_description_keyboard(),
         )
         .await
     }
@@ -191,7 +210,7 @@ impl<'a> GuidedCreateCoordinator<'a> {
             chat_id,
             ScreenDescriptor::GuidedStep(GuidedTaskStep::Description),
             &ui::guided_description_prompt(),
-            ui::create_menu_keyboard(),
+            ui::guided_description_keyboard(),
         )
         .await
     }
@@ -246,7 +265,7 @@ impl<'a> GuidedCreateCoordinator<'a> {
                     chat_id,
                     ScreenDescriptor::GuidedStep(GuidedTaskStep::Description),
                     &ui::guided_description_prompt(),
-                    ui::create_menu_keyboard(),
+                    ui::guided_description_keyboard(),
                 )
                 .await
             }

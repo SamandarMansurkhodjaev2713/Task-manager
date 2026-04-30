@@ -9,6 +9,7 @@ use teloxide::Bot;
 use crate::application::ports::repositories::SecurityAuditLogRepository;
 use crate::application::use_cases::add_task_comment::AddTaskCommentUseCase;
 use crate::application::use_cases::admin::AdminUseCase;
+use crate::application::use_cases::assignee_resolution::AssigneeResolver;
 use crate::application::use_cases::collect_stats::CollectStatsUseCase;
 use crate::application::use_cases::create_task_from_message::CreateTaskFromMessageUseCase;
 use crate::application::use_cases::get_task_status::GetTaskStatusUseCase;
@@ -18,15 +19,17 @@ use crate::application::use_cases::reassign_task::ReassignTaskUseCase;
 use crate::application::use_cases::register_user::RegisterUserUseCase;
 use crate::application::use_cases::report_task_blocker::ReportTaskBlockerUseCase;
 use crate::application::use_cases::search_tasks::SearchTasksUseCase;
+use crate::application::use_cases::sheets_write_back::SheetsWriteBackUseCase;
 use crate::application::use_cases::sync_employees::SyncEmployeesUseCase;
 use crate::application::use_cases::update_task_status::UpdateTaskStatusUseCase;
 use crate::domain::errors::AppError;
 use crate::infrastructure::telegram::bot_gateway::TeloxideNotifier;
-use crate::presentation::telegram::active_screens::ActiveScreenStore;
-use crate::presentation::telegram::active_screens::ScreenDescriptor;
+use crate::presentation::telegram::active_screens::{
+    ActiveScreenState, ActiveScreenStore, ScreenDescriptor,
+};
 use crate::presentation::telegram::admin_nonce_store::AdminNonceStore;
 use crate::presentation::telegram::assignee_selections::PendingAssigneeSelectionStore;
-use crate::presentation::telegram::callbacks::TelegramCallback;
+use crate::presentation::telegram::callbacks::{TaskCardMode, TelegramCallback};
 use crate::presentation::telegram::commands::parse_command;
 use crate::presentation::telegram::drafts::CreationSessionStore;
 use crate::presentation::telegram::gateway::{ChatSerializer, DedupKey, UpdateDedup, UxBarrier};
@@ -44,6 +47,7 @@ use self::dispatcher_guided::{
 use self::dispatcher_handlers::{
     check_rate_limit, handle_callback_action, handle_command, register_actor, RegistrationResult,
 };
+use self::dispatcher_inline::handle_inline_query;
 use self::dispatcher_interactions::handle_task_interaction_message;
 use self::dispatcher_registration::handle_registration_link_callback;
 use self::dispatcher_transport::{
@@ -63,6 +67,8 @@ mod dispatcher_guided;
 mod dispatcher_guided_steps;
 #[path = "dispatcher_handlers.rs"]
 mod dispatcher_handlers;
+#[path = "dispatcher_inline.rs"]
+mod dispatcher_inline;
 #[path = "dispatcher_interactions.rs"]
 mod dispatcher_interactions;
 #[path = "dispatcher_navigation.rs"]
@@ -101,6 +107,12 @@ pub struct TelegramRuntime {
     pub creation_sessions: CreationSessionStore,
     pub task_interactions: TaskInteractionSessionStore,
     pub admin_nonce_store: AdminNonceStore,
+    /// Exposed so the inline-query handler and other presentation-layer code
+    /// can run employee lookups without going through a full use case.
+    pub assignee_resolver: Arc<AssigneeResolver>,
+    /// Sheets write-back use case.  Always present: when write-back is
+    /// disabled it holds a no-op instance so callers never check for `None`.
+    pub sheets_write_back: Arc<SheetsWriteBackUseCase>,
     pub register_user_use_case: Arc<RegisterUserUseCase>,
     pub onboarding_use_case: Arc<OnboardingUseCase>,
     pub create_task_use_case: Arc<CreateTaskFromMessageUseCase>,
@@ -155,7 +167,8 @@ pub async fn run_telegram_dispatcher(runtime: TelegramRuntime) -> Result<(), App
     let state = Arc::new(runtime);
     let handler = dptree::entry()
         .branch(Update::filter_message().endpoint(handle_message))
-        .branch(Update::filter_callback_query().endpoint(handle_callback_query));
+        .branch(Update::filter_callback_query().endpoint(handle_callback_query))
+        .branch(Update::filter_inline_query().endpoint(handle_inline_query));
 
     Dispatcher::builder(bot, handler)
         .dependencies(dptree::deps![state])
@@ -323,25 +336,17 @@ async fn dispatch_callback_inner(
         RegistrationResult::Ready(actor) => *actor,
     };
 
-    let is_stale_callback = state
-        .active_screens
-        .is_stale(incoming_message.chat_id, incoming_message.message_id)
-        .await;
-    let is_descriptor_mismatch = state
-        .active_screens
-        .get(incoming_message.chat_id)
-        .await
-        .is_some_and(|screen| !callback_matches_screen(&callback, &screen.descriptor));
-    if is_stale_callback && callback.is_mutating() {
-        answer_callback(
-            bot,
-            &callback_query.id.to_string(),
-            STALE_MUTATION_CALLBACK_TEXT,
-        )
-        .await?;
-        return Ok(());
-    }
-    if !is_stale_callback && is_descriptor_mismatch && callback.is_mutating() {
+    let screen_state = state.active_screens.get(incoming_message.chat_id).await;
+    let screen_policy = callback_screen_policy(
+        &callback,
+        screen_state.as_ref(),
+        incoming_message.message_id,
+    );
+
+    if matches!(
+        screen_policy,
+        CallbackScreenPolicy::RejectStaleMutation | CallbackScreenPolicy::RejectDescriptorMismatch
+    ) {
         answer_callback(
             bot,
             &callback_query.id.to_string(),
@@ -351,12 +356,25 @@ async fn dispatch_callback_inner(
         return Ok(());
     }
 
-    let callback_answer = if is_stale_callback || is_descriptor_mismatch {
-        STALE_NAVIGATION_CALLBACK_TEXT
-    } else {
-        CALLBACK_OK_TEXT
-    };
-    answer_callback(bot, &callback_query.id.to_string(), callback_answer).await?;
+    if let CallbackScreenPolicy::PromoteIncomingMessage(descriptor) = screen_policy.clone() {
+        state
+            .active_screens
+            .set(
+                incoming_message.chat_id,
+                ActiveScreenState {
+                    message_id: incoming_message.message_id,
+                    descriptor,
+                },
+            )
+            .await;
+    }
+
+    answer_callback(
+        bot,
+        &callback_query.id.to_string(),
+        screen_policy.answer_text(),
+    )
+    .await?;
 
     if matches!(
         callback,
@@ -378,10 +396,107 @@ fn callback_matches_screen(callback: &TelegramCallback, descriptor: &ScreenDescr
     descriptor.accepts(callback)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CallbackScreenPolicy {
+    Fresh,
+    PromoteIncomingMessage(ScreenDescriptor),
+    StaleNavigation,
+    RejectStaleMutation,
+    RejectDescriptorMismatch,
+}
+
+impl CallbackScreenPolicy {
+    fn answer_text(&self) -> &'static str {
+        match self {
+            Self::Fresh | Self::PromoteIncomingMessage(_) => CALLBACK_OK_TEXT,
+            Self::StaleNavigation => STALE_NAVIGATION_CALLBACK_TEXT,
+            Self::RejectStaleMutation | Self::RejectDescriptorMismatch => {
+                STALE_MUTATION_CALLBACK_TEXT
+            }
+        }
+    }
+}
+
+fn callback_screen_policy(
+    callback: &TelegramCallback,
+    current_screen: Option<&ActiveScreenState>,
+    incoming_message_id: i32,
+) -> CallbackScreenPolicy {
+    let Some(screen) = current_screen else {
+        return CallbackScreenPolicy::Fresh;
+    };
+
+    let is_stale_message = screen.message_id != incoming_message_id;
+    if is_stale_message {
+        if let Some(descriptor) = descriptor_for_task_card_callback(callback) {
+            return CallbackScreenPolicy::PromoteIncomingMessage(descriptor);
+        }
+
+        if callback.is_mutating() {
+            return CallbackScreenPolicy::RejectStaleMutation;
+        }
+
+        // Navigation callbacks are intentionally forgiving: if the user taps a
+        // visible old menu/list card, the next render should happen in that
+        // very message instead of silently editing some newer off-screen card.
+        return CallbackScreenPolicy::PromoteIncomingMessage(ScreenDescriptor::Unknown);
+    }
+
+    if !callback_matches_screen(callback, &screen.descriptor) {
+        if callback.is_mutating() {
+            return CallbackScreenPolicy::RejectDescriptorMismatch;
+        }
+
+        return CallbackScreenPolicy::StaleNavigation;
+    }
+
+    CallbackScreenPolicy::Fresh
+}
+
+fn descriptor_for_task_card_callback(callback: &TelegramCallback) -> Option<ScreenDescriptor> {
+    match callback {
+        TelegramCallback::OpenTask {
+            task_uid,
+            origin,
+            mode,
+        } => Some(ScreenDescriptor::TaskDetail {
+            task_uid: *task_uid,
+            mode: *mode,
+            origin: *origin,
+        }),
+        TelegramCallback::UpdateTaskStatus {
+            task_uid, origin, ..
+        }
+        | TelegramCallback::StartTaskCommentInput { task_uid, origin }
+        | TelegramCallback::StartTaskBlockerInput { task_uid, origin }
+        | TelegramCallback::StartTaskReassignInput { task_uid, origin } => {
+            Some(ScreenDescriptor::TaskDetail {
+                task_uid: *task_uid,
+                mode: TaskCardMode::Compact,
+                origin: *origin,
+            })
+        }
+        TelegramCallback::ConfirmTaskCancel { task_uid, origin }
+        | TelegramCallback::ExecuteTaskCancel { task_uid, origin } => {
+            Some(ScreenDescriptor::CancelConfirmation {
+                task_uid: *task_uid,
+                origin: *origin,
+            })
+        }
+        TelegramCallback::ShowDeliveryHelp { task_uid, origin } => {
+            Some(ScreenDescriptor::DeliveryHelp {
+                task_uid: *task_uid,
+                origin: *origin,
+            })
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::callback_matches_screen;
-    use crate::presentation::telegram::active_screens::ScreenDescriptor;
+    use super::{callback_matches_screen, callback_screen_policy, CallbackScreenPolicy};
+    use crate::presentation::telegram::active_screens::{ActiveScreenState, ScreenDescriptor};
     use crate::presentation::telegram::callbacks::{
         TaskCardMode, TaskListOrigin, TelegramCallback,
     };
@@ -411,5 +526,90 @@ mod tests {
         let descriptor = ScreenDescriptor::VoiceCreate(VoiceTaskStep::Confirm);
 
         assert!(callback_matches_screen(&callback, &descriptor));
+    }
+
+    #[test]
+    fn given_notification_task_status_callback_when_another_screen_is_active_then_it_is_promoted() {
+        let task_uid = Uuid::now_v7();
+        let active_list = ActiveScreenState {
+            message_id: 10,
+            descriptor: ScreenDescriptor::TaskList(TaskListOrigin::Assigned),
+        };
+        let callback = TelegramCallback::UpdateTaskStatus {
+            task_uid,
+            next_status: crate::domain::task::TaskStatus::InProgress,
+            origin: TaskListOrigin::Assigned,
+        };
+
+        let policy = callback_screen_policy(&callback, Some(&active_list), 11);
+
+        assert_eq!(
+            policy,
+            CallbackScreenPolicy::PromoteIncomingMessage(ScreenDescriptor::TaskDetail {
+                task_uid,
+                mode: TaskCardMode::Compact,
+                origin: TaskListOrigin::Assigned,
+            })
+        );
+    }
+
+    #[test]
+    fn given_stale_non_task_mutation_when_another_screen_is_active_then_it_is_rejected() {
+        let active_create = ActiveScreenState {
+            message_id: 10,
+            descriptor: ScreenDescriptor::GuidedAssigneeOptions,
+        };
+        let callback = TelegramCallback::DraftSubmit;
+
+        let policy = callback_screen_policy(&callback, Some(&active_create), 11);
+
+        assert_eq!(policy, CallbackScreenPolicy::RejectStaleMutation);
+    }
+
+    #[test]
+    fn given_same_message_task_mutation_for_other_task_then_it_is_rejected() {
+        let active_uid = Uuid::now_v7();
+        let other_uid = Uuid::now_v7();
+        let active_detail = ActiveScreenState {
+            message_id: 10,
+            descriptor: ScreenDescriptor::TaskDetail {
+                task_uid: active_uid,
+                mode: TaskCardMode::Compact,
+                origin: TaskListOrigin::Assigned,
+            },
+        };
+        let callback = TelegramCallback::UpdateTaskStatus {
+            task_uid: other_uid,
+            next_status: crate::domain::task::TaskStatus::InProgress,
+            origin: TaskListOrigin::Assigned,
+        };
+
+        let policy = callback_screen_policy(&callback, Some(&active_detail), 10);
+
+        assert_eq!(policy, CallbackScreenPolicy::RejectDescriptorMismatch);
+    }
+
+    #[test]
+    fn given_stale_manager_inbox_button_when_another_screen_is_active_then_visible_card_is_promoted(
+    ) {
+        let active_detail = ActiveScreenState {
+            message_id: 10,
+            descriptor: ScreenDescriptor::TaskDetail {
+                task_uid: Uuid::now_v7(),
+                mode: TaskCardMode::Compact,
+                origin: TaskListOrigin::Assigned,
+            },
+        };
+        let callback = TelegramCallback::ListTasks {
+            origin: TaskListOrigin::ManagerInbox,
+            cursor: None,
+        };
+
+        let policy = callback_screen_policy(&callback, Some(&active_detail), 11);
+
+        assert_eq!(
+            policy,
+            CallbackScreenPolicy::PromoteIncomingMessage(ScreenDescriptor::Unknown)
+        );
     }
 }

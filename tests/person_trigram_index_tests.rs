@@ -94,7 +94,7 @@ async fn given_empty_query_when_top_matches_then_returns_empty() {
     let index = SqlitePersonTrigramIndex::new(pool);
 
     let matches = index
-        .top_matches(&[], 5)
+        .top_matches(&[] as &[String], 5)
         .await
         .expect("top_matches with empty query should succeed");
 

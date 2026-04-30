@@ -2,7 +2,9 @@ use std::cmp::Ordering;
 
 use strsim::normalized_levenshtein;
 
-use crate::domain::employee::{Employee, EmployeeMatch, EmployeeMatchOutcome, MatchStrategy};
+use crate::domain::employee::{
+    Employee, EmployeeAlias, EmployeeMatch, EmployeeMatchOutcome, MatchStrategy,
+};
 use crate::shared::constants::limits::MIN_EMPLOYEE_MATCH_CONFIDENCE;
 
 /// Confidence threshold above which a *single* fuzzy candidate is treated
@@ -22,6 +24,14 @@ pub const SUGGESTED_CONFIDENCE_THRESHOLD: u8 = 75;
 /// so prefix matches are *always* shown as a suggestion requiring explicit
 /// confirmation — they are never silently auto-assigned.
 pub const PREFIX_MATCH_CONFIDENCE: u8 = 78;
+/// Confidence assigned to a hit on a registered alias (diminutive /
+/// abbreviation).  Set just below `HIGH_CONFIDENCE_THRESHOLD` so that alias
+/// matches surface as *Suggested* (one-tap confirmation) rather than being
+/// auto-assigned.  This prevents a short alias like "Саша" — which could
+/// potentially apply to multiple employees — from silently routing tasks to
+/// the wrong person.
+pub const ALIAS_MATCH_CONFIDENCE: u8 = 92;
+
 /// Minimum query length (in Unicode characters) required before the prefix
 /// matcher activates.  A 1-character query like "А" would match too many
 /// employees to be useful; 2 characters is the practical floor.
@@ -298,11 +308,72 @@ fn classify_query(value: &str) -> EmployeeQueryKind {
     }
 }
 
+/// Alias-aware variant of [`match_employee_name`].
+///
+/// Checks the registered alias table **first** (before any fuzzy/prefix
+/// logic), so that "Ваня" resolves directly to "Иван Иванов" instead of
+/// falling through to a potentially ambiguous first-name search.
+///
+/// The alias lookup is case-insensitive (both sides are ё→е normalised).
+///
+/// Resolution rules:
+/// * **0 alias hits** — falls through to `match_employee_name` unchanged.
+/// * **1 alias hit** — returns `Unique` with `ALIAS_MATCH_CONFIDENCE`.
+///   This is below `HIGH_CONFIDENCE_THRESHOLD`, so `rank_outcome` will turn
+///   it into `Suggested` and the UI always asks for one-tap confirmation.
+/// * **≥2 alias hits** (the same alias mapped to multiple employees, which
+///   should not happen given the unique-index constraint, but is handled
+///   defensively) — returns `Ambiguous`.
+pub fn match_employee_name_with_aliases(
+    query: &str,
+    employees: &[Employee],
+    aliases: &[EmployeeAlias],
+) -> EmployeeMatchOutcome {
+    let normalized_query = normalize_name(query);
+
+    // Build alias candidates: alias text must match the normalised query, and
+    // the referenced employee must exist in the current active-employee list.
+    let mut alias_hits: Vec<EmployeeMatch> = aliases
+        .iter()
+        .filter(|alias| normalize_name(&alias.alias) == normalized_query)
+        .filter_map(|alias| {
+            employees
+                .iter()
+                .find(|emp| emp.id == Some(alias.employee_id))
+        })
+        .map(|employee| EmployeeMatch {
+            employee: employee.clone(),
+            confidence: ALIAS_MATCH_CONFIDENCE,
+            strategy: MatchStrategy::ExactAlias,
+        })
+        .collect();
+
+    match alias_hits.len() {
+        0 => {
+            // No alias match — run the full standard chain.
+            match_employee_name(query, employees)
+        }
+        1 => EmployeeMatchOutcome::Unique(
+            alias_hits
+                .into_iter()
+                .next()
+                .expect("len == 1 verified above"),
+        ),
+        _ => {
+            // Multiple employees share the same alias (defensive branch; the
+            // unique DB index should prevent this in practice).  Sort
+            // deterministically so the UI order is stable.
+            alias_hits.sort_by(compare_matches);
+            EmployeeMatchOutcome::Ambiguous(alias_hits)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::Utc;
 
-    use crate::domain::employee::{Employee, MatchStrategy};
+    use crate::domain::employee::{Employee, EmployeeSource, MatchStrategy};
 
     use super::{
         match_employee_name, rank_outcome, EmployeeMatchOutcome, RankedOutcome,
@@ -318,6 +389,7 @@ mod tests {
             phone: None,
             department: None,
             is_active: true,
+            source: EmployeeSource::GoogleSheets,
             synced_at: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),

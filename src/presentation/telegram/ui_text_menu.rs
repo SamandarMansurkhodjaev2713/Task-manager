@@ -421,4 +421,62 @@ mod tests {
         assert!(text.contains("Роль: администратор"), "got: {text}");
         assert!(text.contains("Тихие часы: отключены"), "got: {text}");
     }
+
+    // ── guided_confirmation_text ─────────────────────────────────────────────
+
+    #[test]
+    fn given_resolved_employee_when_confirmation_text_then_shows_full_name() {
+        use super::guided_confirmation_text;
+        use crate::presentation::telegram::drafts::GuidedTaskDraft;
+
+        let mut draft = GuidedTaskDraft::new();
+        draft.assignee = Some("Abdullazi Zazizov".to_owned());
+        draft.resolved_employee_id = Some(42);
+        draft.description = Some("Подготовить релиз".to_owned());
+
+        let text = guided_confirmation_text(&draft);
+
+        assert!(
+            text.contains("Abdullazi Zazizov"),
+            "confirmation must show the resolved employee full name; got: {text}"
+        );
+    }
+
+    #[test]
+    fn given_no_assignee_when_confirmation_text_then_shows_unassigned_label() {
+        use super::guided_confirmation_text;
+        use crate::presentation::telegram::drafts::GuidedTaskDraft;
+
+        let draft = GuidedTaskDraft::new(); // assignee is None
+
+        let text = guided_confirmation_text(&draft);
+
+        assert!(
+            text.contains("без исполнителя"),
+            "confirmation with no assignee must show 'без исполнителя'; got: {text}"
+        );
+    }
+
+    /// Regression guard: a draft that previously carried only a raw abbreviation
+    /// in `assignee` (old behaviour before the fix) would show the abbreviation.
+    /// After the fix, the `assignee` field is set to the resolved full name, so
+    /// this test documents the *expected* behaviour — if it fails, the fix regressed.
+    #[test]
+    fn given_raw_abbreviation_in_assignee_when_confirmation_text_then_shows_it_verbatim() {
+        use super::guided_confirmation_text;
+        use crate::presentation::telegram::drafts::GuidedTaskDraft;
+
+        let mut draft = GuidedTaskDraft::new();
+        // Simulate the error-fallback path: raw text stored, no resolved ID.
+        draft.assignee = Some("ABD".to_owned());
+        draft.resolved_employee_id = None;
+
+        let text = guided_confirmation_text(&draft);
+
+        // Raw text is shown as-is (acceptable degradation in the error path).
+        assert!(
+            text.contains("ABD"),
+            "error-fallback path must show the raw assignee text; got: {text}"
+        );
+    }
 }

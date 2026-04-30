@@ -47,25 +47,53 @@ impl ListTasksUseCase {
             )
         })?;
         let page_size = sanitize_limit(limit);
-        let tasks = match scope {
+
+        // Fetch one extra row beyond the requested page so we can reliably
+        // decide whether more data exists.  Without this, the last full page
+        // would always display an "Ещё задачи" button that leads to an empty
+        // screen — confusing and wasteful.
+        let fetch_size = page_size.saturating_add(1);
+
+        let mut tasks = match scope {
             TaskListScope::AssignedToMe | TaskListScope::Focus => {
                 self.task_repository
-                    .list_assigned_to_user(actor_id, cursor, page_size)
+                    .list_assigned_to_user(actor_id, cursor, fetch_size)
                     .await?
             }
             TaskListScope::CreatedByMe => {
                 self.task_repository
-                    .list_created_by_user(actor_id, cursor, page_size)
+                    .list_created_by_user(actor_id, cursor, fetch_size)
                     .await?
             }
-            TaskListScope::Team | TaskListScope::ManagerInbox => {
+            TaskListScope::Team => {
                 RoleAuthorizationPolicy::ensure_can_view_team_tasks(actor)?;
-                self.task_repository.list_all(cursor, page_size).await?
+                self.task_repository.list_all(cursor, fetch_size).await?
+            }
+            TaskListScope::ManagerInbox => {
+                RoleAuthorizationPolicy::ensure_can_view_team_tasks(actor)?;
+                // Manager inbox sections only inspect non-terminal tasks; fetch
+                // only those to avoid pulling completed/cancelled rows into memory.
+                self.task_repository.list_active(cursor, fetch_size).await?
             }
         };
 
+        // If we got more than `page_size` rows the extra row is the sentinel
+        // that proves additional pages exist.  Trim it before building sections
+        // so only the correct page_size items are shown.
+        let has_more = tasks.len() > page_size as usize;
+        if has_more {
+            tasks.truncate(page_size as usize);
+        }
+
         let today = self.clock.today_utc();
-        let next_cursor = tasks.last().map(|task| task.task_uid.to_string());
+        // next_cursor is the last *visible* task's UID.  The DB query uses
+        // `task_uid < cursor ORDER BY task_uid DESC` so the subsequent page
+        // starts immediately after this row.
+        let next_cursor = if has_more {
+            tasks.last().map(|task| task.task_uid.to_string())
+        } else {
+            None
+        };
         Ok(TaskListPage {
             sections: build_sections(scope, today, &tasks),
             next_cursor,
@@ -252,4 +280,158 @@ fn task_highlight(task: &Task, today: NaiveDate) -> Option<String> {
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::NaiveDate;
+
+    fn today() -> NaiveDate {
+        NaiveDate::from_ymd_opt(2026, 4, 23).unwrap()
+    }
+
+    fn task_with_status(status: TaskStatus) -> Task {
+        use crate::domain::task::{MessageType, StructuredTaskDraft};
+        use chrono::Utc;
+        let mut task = Task::new(
+            "telegram:1:1".to_owned(),
+            1,
+            None,
+            None,
+            StructuredTaskDraft {
+                title: "Тест".to_owned(),
+                expected_result: "Результат".to_owned(),
+                steps: vec!["Шаг 1".to_owned()],
+                acceptance_criteria: vec!["Критерий 1".to_owned()],
+                deadline_iso: None,
+                refused: false,
+                refusal_reason: None,
+            },
+            None,
+            None,
+            "test message".to_owned(),
+            MessageType::Text,
+            "test-model".to_owned(),
+            "{}".to_owned(),
+            1,
+            1,
+            Utc::now(),
+        )
+        .expect("factory task");
+        task.status = status;
+        task
+    }
+
+    /// Completed tasks must NOT appear in any manager inbox section.
+    /// This validates the DB-level filter in `list_active` is semantically sound.
+    #[test]
+    fn given_completed_task_when_manager_inbox_sections_then_task_is_excluded_from_all_sections() {
+        let today = today();
+        let task = task_with_status(TaskStatus::Completed);
+
+        assert!(
+            !section_in_review(&task, today),
+            "completed task must not appear in in_review"
+        );
+        assert!(
+            !section_blocked(&task, today),
+            "completed task must not appear in blocked"
+        );
+        assert!(
+            !section_deadline_risk(&task, today),
+            "completed task must not appear in deadline_risk"
+        );
+        assert!(
+            !section_stale(&task, today),
+            "completed task must not appear in stale"
+        );
+        assert!(
+            !section_pending_registration(&task, today),
+            "completed task must not appear in pending_registration"
+        );
+    }
+
+    /// Cancelled tasks must NOT appear in any manager inbox section.
+    #[test]
+    fn given_cancelled_task_when_manager_inbox_sections_then_task_is_excluded_from_all_sections() {
+        let today = today();
+        let task = task_with_status(TaskStatus::Cancelled);
+
+        assert!(!section_in_review(&task, today));
+        assert!(!section_blocked(&task, today));
+        assert!(!section_deadline_risk(&task, today));
+        assert!(!section_stale(&task, today));
+        assert!(!section_pending_registration(&task, today));
+    }
+
+    /// `InReview` tasks must appear in the `section_in_review` section.
+    #[test]
+    fn given_in_review_task_when_section_in_review_then_matches() {
+        let task = task_with_status(TaskStatus::InReview);
+        assert!(section_in_review(&task, today()));
+    }
+
+    /// `Blocked` tasks must appear in the `section_blocked` section.
+    #[test]
+    fn given_blocked_task_when_section_blocked_then_matches() {
+        let task = task_with_status(TaskStatus::Blocked);
+        assert!(section_blocked(&task, today()));
+    }
+
+    // ── Pagination sentinel tests ─────────────────────────────────────────
+
+    /// When `has_more` is false (page is not full), `next_cursor` must be
+    /// `None` so the "Ещё задачи" button is not shown.
+    #[test]
+    fn given_partial_page_when_build_page_then_no_next_cursor() {
+        // Simulate: page_size=5, tasks returned = 3 (partial last page)
+        let page_size: u32 = 5;
+        let tasks: Vec<Task> = (0..3)
+            .map(|_| task_with_status(TaskStatus::InProgress))
+            .collect();
+
+        let has_more = tasks.len() > page_size as usize;
+        let next_cursor = if has_more {
+            tasks.last().map(|t| t.task_uid.to_string())
+        } else {
+            None
+        };
+
+        assert!(!has_more, "partial page must not signal more data");
+        assert!(next_cursor.is_none(), "no cursor on partial page");
+    }
+
+    /// When the repository returns exactly `page_size + 1` rows (sentinel),
+    /// `has_more` is `true` and `next_cursor` is set to the last *visible*
+    /// (page_size-th) row's UID.
+    #[test]
+    fn given_full_page_plus_sentinel_when_build_page_then_next_cursor_is_set() {
+        let page_size: u32 = 5;
+        // Simulate fetch_size = 6 rows returned; the 6th is the sentinel.
+        let mut tasks: Vec<Task> = (0..6)
+            .map(|_| task_with_status(TaskStatus::InProgress))
+            .collect();
+
+        let has_more = tasks.len() > page_size as usize;
+        if has_more {
+            tasks.truncate(page_size as usize);
+        }
+        let next_cursor = if has_more {
+            tasks.last().map(|t| t.task_uid.to_string())
+        } else {
+            None
+        };
+
+        assert!(has_more, "sentinel row must signal more data");
+        assert_eq!(
+            tasks.len(),
+            page_size as usize,
+            "visible page must be trimmed to page_size"
+        );
+        assert!(
+            next_cursor.is_some(),
+            "cursor must be set when more data exists"
+        );
+    }
 }

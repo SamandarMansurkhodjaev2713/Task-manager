@@ -57,11 +57,12 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 10001 taskbot \
     && useradd --system --uid 10001 --gid 10001 --create-home --home-dir /home/taskbot taskbot \
-    && mkdir -p /app/data \
+    && mkdir -p /app/data /app/docs \
     && chown -R taskbot:taskbot /app /home/taskbot
 
 COPY --from=builder /app/target/release/telegram-task-bot /usr/local/bin/telegram-task-bot
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+COPY docs/google-sheets-test-employees.csv /app/docs/google-sheets-test-employees.csv
 
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 

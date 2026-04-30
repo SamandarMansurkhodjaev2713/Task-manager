@@ -31,12 +31,9 @@ pub enum FeatureFlag {
     AdminPanel,
     SlaEscalations,
     VoiceV2,
-    NotificationDigest,
     TaskTemplates,
     RecurrenceRules,
-    InlineAssigneeSearch,
     TeamAnalytics,
-    CsvExport,
 }
 
 impl FeatureFlag {
@@ -46,21 +43,22 @@ impl FeatureFlag {
             Self::AdminPanel => "admin_panel",
             Self::SlaEscalations => "sla_escalations",
             Self::VoiceV2 => "voice_v2",
-            Self::NotificationDigest => "notification_digest",
             Self::TaskTemplates => "task_templates",
             Self::RecurrenceRules => "recurrence_rules",
-            Self::InlineAssigneeSearch => "inline_assignee_search",
             Self::TeamAnalytics => "team_analytics",
-            Self::CsvExport => "csv_export",
         }
     }
 
     /// Flags that ship **enabled by default** for v3.  Anything not listed
     /// here must be explicitly switched on via ENV or runtime override.
     pub fn default_enabled() -> HashSet<FeatureFlag> {
-        [FeatureFlag::OnboardingV2, FeatureFlag::AdminPanel]
-            .into_iter()
-            .collect()
+        [
+            FeatureFlag::OnboardingV2,
+            FeatureFlag::AdminPanel,
+            FeatureFlag::TeamAnalytics,
+        ]
+        .into_iter()
+        .collect()
     }
 }
 
@@ -73,12 +71,9 @@ impl FromStr for FeatureFlag {
             "admin_panel" => Ok(Self::AdminPanel),
             "sla_escalations" => Ok(Self::SlaEscalations),
             "voice_v2" => Ok(Self::VoiceV2),
-            "notification_digest" => Ok(Self::NotificationDigest),
             "task_templates" => Ok(Self::TaskTemplates),
             "recurrence_rules" => Ok(Self::RecurrenceRules),
-            "inline_assignee_search" => Ok(Self::InlineAssigneeSearch),
             "team_analytics" => Ok(Self::TeamAnalytics),
-            "csv_export" => Ok(Self::CsvExport),
             other => Err(UnknownFeatureFlag(other.to_owned())),
         }
     }
@@ -163,12 +158,9 @@ const ALL_FLAGS: &[FeatureFlag] = &[
     FeatureFlag::AdminPanel,
     FeatureFlag::SlaEscalations,
     FeatureFlag::VoiceV2,
-    FeatureFlag::NotificationDigest,
     FeatureFlag::TaskTemplates,
     FeatureFlag::RecurrenceRules,
-    FeatureFlag::InlineAssigneeSearch,
     FeatureFlag::TeamAnalytics,
-    FeatureFlag::CsvExport,
 ];
 
 /// A thread-safe, runtime-mutable feature flag registry shared across the

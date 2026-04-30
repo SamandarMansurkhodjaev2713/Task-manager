@@ -283,6 +283,10 @@ pub fn guided_assignee_suggestions_keyboard(
     InlineKeyboardMarkup::new(rows)
 }
 
+pub fn guided_description_keyboard() -> InlineKeyboardMarkup {
+    InlineKeyboardMarkup::new(vec![vec![button("🏠 В меню", TelegramCallback::MenuHome)]])
+}
+
 pub fn guided_deadline_keyboard() -> InlineKeyboardMarkup {
     InlineKeyboardMarkup::new(vec![
         vec![button("Без срока", TelegramCallback::DraftSkipDeadline)],
@@ -541,7 +545,13 @@ fn clarification_candidate_label(candidate: &EmployeeCandidateView) -> String {
         .map(|value| format!(" (@{value})"))
         .unwrap_or_default();
 
-    format!("{}{}", candidate.full_name, username)
+    let workload = match candidate.active_task_count {
+        Some(0) => String::new(),
+        Some(n) => format!(" · {n} зад."),
+        None => String::new(),
+    };
+
+    format!("{}{}{}", candidate.full_name, username, workload)
 }
 
 // ── Admin-panel keyboards (Phase 4) ──────────────────────────────────────

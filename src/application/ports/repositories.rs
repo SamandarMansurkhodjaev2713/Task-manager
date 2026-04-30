@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use crate::domain::audit::{AdminAuditEntry, AuditLogEntry, SecurityAuditEntry};
 use crate::domain::comment::TaskComment;
-use crate::domain::employee::Employee;
+use crate::domain::employee::{Employee, EmployeeAlias, WorkloadSnapshot};
 use crate::domain::errors::AppResult;
 use crate::domain::notification::{Notification, NotificationType};
 use crate::domain::task::{Task, TaskStats};
@@ -25,6 +25,7 @@ pub trait UserRepository: Send + Sync {
     async fn find_by_id(&self, user_id: i64) -> AppResult<Option<User>>;
     async fn find_by_telegram_id(&self, telegram_id: i64) -> AppResult<Option<User>>;
     async fn find_by_username(&self, username: &str) -> AppResult<Option<User>>;
+    async fn find_by_linked_employee_id(&self, employee_id: i64) -> AppResult<Option<User>>;
     async fn list_with_chat_id(&self) -> AppResult<Vec<User>>;
 
     /// Creates or resumes an onboarding session for the given Telegram user.
@@ -155,6 +156,159 @@ pub trait EmployeeRepository: Send + Sync {
     async fn upsert_many(&self, employees: &[Employee]) -> AppResult<usize>;
     async fn list_active(&self) -> AppResult<Vec<Employee>>;
     async fn find_by_id(&self, employee_id: i64) -> AppResult<Option<Employee>>;
+
+    /// Finds an active employee record by Telegram username (case-insensitive).
+    /// Returns `None` when no employee has that username in the directory.
+    async fn find_by_telegram_username(&self, username: &str) -> AppResult<Option<Employee>>;
+
+    /// Inserts a `bot_registered` employee for a user who completed `/start`
+    /// without matching any Google-Sheets entry.
+    ///
+    /// If an employee with the same `telegram_username` already exists (which
+    /// means the Sheets sync already knows this person), that existing record
+    /// is returned as-is so we never create duplicate rows.  When
+    /// `telegram_username` is `None`, a new row is always inserted because we
+    /// have no reliable dedup key.
+    ///
+    /// Callers MUST ensure `full_name` is a non-empty validated name (e.g.
+    /// constructed via [`PersonName::display`]) before calling this method.
+    async fn upsert_bot_registered(
+        &self,
+        full_name: &str,
+        telegram_username: Option<&str>,
+        now: DateTime<Utc>,
+    ) -> AppResult<Employee>;
+
+    /// Returns the current workload snapshot for `employee_id`: how many
+    /// non-terminal tasks are assigned to them, and how many of those are
+    /// overdue.
+    ///
+    /// The default implementation returns a zero snapshot so that test stubs
+    /// and alternative implementations are not forced to implement the query.
+    /// The production SQLite adapter overrides this with a direct task count.
+    async fn workload_snapshot(&self, employee_id: i64) -> AppResult<WorkloadSnapshot> {
+        Ok(WorkloadSnapshot {
+            employee_id,
+            active_task_count: 0,
+            overdue_task_count: 0,
+        })
+    }
+}
+
+// ── Employee alias repository ─────────────────────────────────────────────
+
+/// Read/write port for the `employee_aliases` table (migration 016).
+///
+/// Aliases are short forms / diminutives / abbreviations that map a single
+/// text token to one specific employee.  The resolver consults this table
+/// *before* fuzzy matching so that well-known short names ("Ваня" → Ivan)
+/// are resolved with one tap rather than going through a disambiguation list.
+#[async_trait]
+pub trait AliasRepository: Send + Sync {
+    /// Returns every alias row in the database.  The result set is small
+    /// (O(employees × avg_aliases_per_person)) and is loaded into memory on
+    /// every resolution call, so keeping this query cheap matters.
+    async fn list_all(&self) -> AppResult<Vec<EmployeeAlias>>;
+
+    /// Inserts a new alias.  Returns `Err` when `lower(alias)` already exists
+    /// for a different employee (unique-index violation).
+    async fn create(
+        &self,
+        employee_id: i64,
+        alias: &str,
+        created_by_user_id: Option<i64>,
+        now: DateTime<Utc>,
+    ) -> AppResult<EmployeeAlias>;
+
+    /// Removes all alias rows for the given employee (used when the employee
+    /// record is deleted or deactivated).
+    async fn delete_for_employee(&self, employee_id: i64) -> AppResult<u64>;
+
+    /// Idempotent diminutive seed.  For each `(alias, employee_id)` pair,
+    /// tries to insert a row with `INSERT OR IGNORE`; silently skips pairs
+    /// whose alias text already exists.  Returns the number of rows inserted.
+    ///
+    /// Callers MUST resolve the canonical employee IDs before calling this
+    /// method (the SQL migration cannot do it at migration time).
+    async fn seed_many(&self, pairs: &[(i64, &str)], now: DateTime<Utc>) -> AppResult<usize>;
+}
+
+// ── Assignee history repository ───────────────────────────────────────────
+
+/// A single entry in the per-creator assignee frequency table.
+#[derive(Debug, Clone)]
+pub struct AssigneeHistoryEntry {
+    pub employee_id: i64,
+    pub use_count: u32,
+    pub last_used_at: DateTime<Utc>,
+}
+
+/// Read/write port for the `assignee_history` table (migration 016).
+///
+/// Tracks how often each user assigns tasks to each employee so the resolver
+/// can boost confidence for "recently used" assignees.
+#[async_trait]
+pub trait AssigneeHistoryRepository: Send + Sync {
+    /// Upsert: if a `(creator_user_id, employee_id)` row already exists,
+    /// increments `use_count` by 1 and refreshes `last_used_at`.  Otherwise
+    /// inserts a new row with `use_count = 1`.
+    async fn record_assignment(
+        &self,
+        creator_user_id: i64,
+        employee_id: i64,
+        now: DateTime<Utc>,
+    ) -> AppResult<()>;
+
+    /// Returns the top `limit` employees most recently assigned by this
+    /// creator, ordered by `(use_count DESC, last_used_at DESC)`.
+    async fn top_for_creator(
+        &self,
+        creator_user_id: i64,
+        limit: u32,
+    ) -> AppResult<Vec<AssigneeHistoryEntry>>;
+}
+
+// ── Sheets sync / write-back repository ──────────────────────────────────
+
+/// A pending write-back row (one per `bot_registered` employee).
+#[derive(Debug, Clone)]
+pub struct SheetsSyncRow {
+    pub id: i64,
+    pub employee_id: i64,
+    pub telegram_id: i64,
+    pub full_name: String,
+    pub telegram_username: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub error_count: u32,
+}
+
+/// Read/write port for the `pending_sheet_writes` table (migration 016).
+///
+/// Rows are inserted when a user completes `/start` onboarding so their
+/// record is reflected back into the Google Sheets directory.  A background
+/// worker reads unwritten rows, calls the Sheets API, and marks them done.
+#[async_trait]
+pub trait SheetsSyncRepository: Send + Sync {
+    /// Enqueue a write-back row for the given employee.
+    /// Uses `INSERT OR IGNORE` semantics — calling this twice for the same
+    /// `employee_id` is safe and produces exactly one pending row.
+    async fn enqueue(
+        &self,
+        employee_id: i64,
+        telegram_id: i64,
+        full_name: &str,
+        telegram_username: Option<&str>,
+    ) -> AppResult<()>;
+
+    /// Returns up to `limit` rows that have not yet been written and whose
+    /// `error_count < max_attempts`.
+    async fn list_pending(&self, max_attempts: u32, limit: i64) -> AppResult<Vec<SheetsSyncRow>>;
+
+    /// Mark the row as successfully written to Sheets.
+    async fn mark_written(&self, id: i64, now: DateTime<Utc>) -> AppResult<()>;
+
+    /// Increment `error_count` and store the latest error message.
+    async fn record_error(&self, id: i64, error: &str) -> AppResult<()>;
 }
 
 /// Identifies the kind of directory row that owns a set of person trigrams.
@@ -256,6 +410,12 @@ pub trait TaskRepository: Send + Sync {
     async fn count_stats_for_user(&self, user_id: i64) -> AppResult<TaskStats>;
     async fn count_stats_global(&self) -> AppResult<TaskStats>;
     async fn list_open(&self, limit: i64) -> AppResult<Vec<Task>>;
+
+    /// Returns only non-terminal tasks (status NOT IN `completed`, `cancelled`),
+    /// ordered and paginated the same way as [`Self::list_all`].  Used by the
+    /// `ManagerInbox` scope so that completed/cancelled tasks are never loaded
+    /// into memory just to be discarded by the section predicates.
+    async fn list_active(&self, cursor: Option<String>, limit: u32) -> AppResult<Vec<Task>>;
 }
 
 #[async_trait]

@@ -13,7 +13,13 @@
       "Bash(cargo clean *)",
       "Bash(find /c/Users/sam4k/task-tg-bot/src -type f \\\\\\( -name \"*.rs\" \\\\\\) -exec wc -l {} +)",
       "Bash(find /c/Users/sam4k/task-tg-bot/migrations -type f \\\\\\( -name \"*.sql\" \\\\\\) -exec wc -l {} +)",
-      "Bash(find /c/Users/sam4k/task-tg-bot/src -type f -name \"*.rs\" -exec wc -l {} +)"
+      "Bash(find /c/Users/sam4k/task-tg-bot/src -type f -name \"*.rs\" -exec wc -l {} +)",
+      "Bash(grep -v \"^$\")",
+      "Bash(sqlite3 --version)",
+      "Bash(cargo build *)",
+      "Bash(xargs grep *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)"
     ]
   }
 }

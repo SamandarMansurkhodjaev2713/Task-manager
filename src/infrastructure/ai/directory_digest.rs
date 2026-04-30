@@ -94,7 +94,7 @@ fn render_digest(employees: &[crate::domain::employee::Employee]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::employee::Employee;
+    use crate::domain::employee::{Employee, EmployeeSource};
     use chrono::Utc;
 
     fn sample(full_name: &str, username: Option<&str>) -> Employee {
@@ -107,6 +107,7 @@ mod tests {
             phone: None,
             department: None,
             is_active: true,
+            source: EmployeeSource::GoogleSheets,
             synced_at: None,
             created_at: now,
             updated_at: now,

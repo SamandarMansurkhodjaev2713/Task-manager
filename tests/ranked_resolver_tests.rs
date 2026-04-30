@@ -8,7 +8,7 @@
 
 use chrono::Utc;
 use telegram_task_bot::domain::employee::{
-    Employee, EmployeeMatch, EmployeeMatchOutcome, MatchStrategy,
+    Employee, EmployeeMatch, EmployeeMatchOutcome, EmployeeSource, MatchStrategy,
 };
 use telegram_task_bot::domain::name_matching::{
     rank_outcome, RankedOutcome, HIGH_CONFIDENCE_THRESHOLD, SUGGESTED_CONFIDENCE_THRESHOLD,
@@ -23,6 +23,7 @@ fn employee(name: &str) -> Employee {
         phone: None,
         department: None,
         is_active: true,
+        source: EmployeeSource::GoogleSheets,
         synced_at: None,
         created_at: Utc::now(),
         updated_at: Utc::now(),

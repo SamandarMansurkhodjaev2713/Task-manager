@@ -7,7 +7,7 @@ use crate::domain::user::UserRole;
 pub(crate) const USER_COLUMNS: &str =
     "id, telegram_id, last_chat_id, telegram_username, full_name, first_name, last_name, linked_employee_id, is_employee, role, onboarding_state, onboarding_version, timezone, quiet_hours_start_min, quiet_hours_end_min, deactivated_at, created_at, updated_at";
 pub(crate) const EMPLOYEE_COLUMNS: &str =
-    "id, full_name, telegram_username, email, phone, department, is_active, synced_at, created_at, updated_at";
+    "id, full_name, telegram_username, email, phone, department, is_active, source, synced_at, created_at, updated_at";
 pub(crate) const TASK_COLUMNS: &str =
     "id, task_uid, version, source_message_key, created_by_user_id, assigned_to_user_id, assigned_to_employee_id, title, description, acceptance_criteria, expected_result, deadline, deadline_raw, original_message, message_type, ai_model_used, ai_response_raw, status, priority, blocked_reason, telegram_chat_id, telegram_message_id, telegram_task_message_id, tags, created_at, sent_at, started_at, blocked_at, review_requested_at, completed_at, cancelled_at, updated_at";
 pub(crate) const NOTIFICATION_COLUMNS: &str =
@@ -19,6 +19,9 @@ pub(crate) const ADMIN_AUDIT_COLUMNS: &str =
     "id, actor_user_id, target_user_id, action_code, metadata, created_at";
 pub(crate) const SECURITY_AUDIT_COLUMNS: &str =
     "id, actor_user_id, telegram_id, event_code, metadata, created_at";
+pub(crate) const ALIAS_COLUMNS: &str = "id, employee_id, alias, created_by_user_id, created_at";
+pub(crate) const PENDING_SHEET_WRITE_COLUMNS: &str =
+    "id, employee_id, telegram_id, full_name, telegram_username, created_at, written_at, last_error, error_count";
 
 pub(crate) fn bool_as_i64(value: bool) -> i64 {
     if value {

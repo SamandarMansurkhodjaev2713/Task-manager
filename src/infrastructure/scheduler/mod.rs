@@ -9,6 +9,7 @@ use crate::application::use_cases::enqueue_daily_summaries::EnqueueDailySummarie
 use crate::application::use_cases::enqueue_task_reminders::EnqueueTaskRemindersUseCase;
 use crate::application::use_cases::process_notifications::ProcessNotificationsUseCase;
 use crate::application::use_cases::process_recurrence_rules::ProcessRecurrenceRulesUseCase;
+use crate::application::use_cases::sheets_write_back::SheetsWriteBackUseCase;
 use crate::application::use_cases::sync_employees::SyncEmployeesUseCase;
 use crate::application::use_cases::update_sla_states::UpdateSlaStatesUseCase;
 use crate::config::SchedulerConfig;
@@ -24,25 +25,37 @@ const SLA_CHECK_INTERVAL: Duration = Duration::from_secs(5 * 60);
 /// for task-management workflows.
 const RECURRENCE_CHECK_INTERVAL: Duration = Duration::from_secs(60);
 
+/// Interval between write-back flush runs.  Five minutes is a good balance:
+/// short enough that newly registered employees appear in Sheets within one
+/// work-hour, long enough to avoid hammering the Sheets API quota.
+const WRITE_BACK_FLUSH_INTERVAL: Duration = Duration::from_secs(5 * 60);
+
 pub struct BackgroundJobs {
     cancellation_token: CancellationToken,
     handles: Vec<JoinHandle<()>>,
 }
 
+pub struct BackgroundJobUseCases {
+    pub sync_employees: Arc<SyncEmployeesUseCase>,
+    pub process_notifications: Arc<ProcessNotificationsUseCase>,
+    pub enqueue_task_reminders: Arc<EnqueueTaskRemindersUseCase>,
+    pub enqueue_daily_summaries: Arc<EnqueueDailySummariesUseCase>,
+    pub update_sla_states: Arc<UpdateSlaStatesUseCase>,
+    pub process_recurrence_rules: Arc<ProcessRecurrenceRulesUseCase>,
+    pub sheets_write_back: Arc<SheetsWriteBackUseCase>,
+}
+
 impl BackgroundJobs {
-    pub fn start(
-        config: SchedulerConfig,
-        sync_employees_use_case: Arc<SyncEmployeesUseCase>,
-        process_notifications_use_case: Arc<ProcessNotificationsUseCase>,
-        enqueue_task_reminders_use_case: Arc<EnqueueTaskRemindersUseCase>,
-        enqueue_daily_summaries_use_case: Arc<EnqueueDailySummariesUseCase>,
-        update_sla_states_use_case: Arc<UpdateSlaStatesUseCase>,
-        process_recurrence_rules_use_case: Arc<ProcessRecurrenceRulesUseCase>,
-    ) -> Self {
+    pub fn start(config: SchedulerConfig, use_cases: BackgroundJobUseCases) -> Self {
         let cancellation_token = CancellationToken::new();
-        let deadline_reminders_use_case = enqueue_task_reminders_use_case.clone();
-        let overdue_reminders_use_case = enqueue_task_reminders_use_case.clone();
-        let daily_summaries_use_case = enqueue_daily_summaries_use_case.clone();
+        let deadline_reminders_use_case = use_cases.enqueue_task_reminders.clone();
+        let overdue_reminders_use_case = use_cases.enqueue_task_reminders.clone();
+        let daily_summaries_use_case = use_cases.enqueue_daily_summaries.clone();
+        let sync_employees_use_case = use_cases.sync_employees;
+        let process_notifications_use_case = use_cases.process_notifications;
+        let update_sla_states_use_case = use_cases.update_sla_states;
+        let process_recurrence_rules_use_case = use_cases.process_recurrence_rules;
+        let sheets_write_back_use_case = use_cases.sheets_write_back;
         let handles = vec![
             spawn_interval_job(
                 cancellation_token.clone(),
@@ -132,6 +145,18 @@ impl BackgroundJobs {
                                 code = error.code(),
                                 "recurrence_rules_processing_failed"
                             );
+                        }
+                    }
+                },
+            ),
+            spawn_interval_job(
+                cancellation_token.clone(),
+                WRITE_BACK_FLUSH_INTERVAL,
+                move || {
+                    let uc = sheets_write_back_use_case.clone();
+                    async move {
+                        if let Err(error) = uc.flush().await {
+                            tracing::error!(code = error.code(), "sheets_write_back_flush_failed");
                         }
                     }
                 },

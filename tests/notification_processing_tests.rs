@@ -110,6 +110,10 @@ mod mock_impls {
             unimplemented!("find_by_username not exercised in these tests")
         }
 
+        async fn find_by_linked_employee_id(&self, _employee_id: i64) -> AppResult<Option<User>> {
+            unimplemented!("find_by_linked_employee_id not exercised in these tests")
+        }
+
         async fn list_with_chat_id(&self) -> AppResult<Vec<User>> {
             unimplemented!("list_with_chat_id not exercised in these tests")
         }
@@ -226,6 +230,7 @@ mod mock_impls {
             async fn count_stats_for_user(&self, user_id: i64) -> AppResult<TaskStats>;
             async fn count_stats_global(&self) -> AppResult<TaskStats>;
             async fn list_open(&self, limit: i64) -> AppResult<Vec<Task>>;
+            async fn list_active(&self, cursor: Option<String>, limit: u32) -> AppResult<Vec<Task>>;
         }
     }
 

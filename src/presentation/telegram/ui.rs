@@ -11,8 +11,9 @@ pub use ui_keyboards::{
     clarification_keyboard, create_menu_keyboard, created_task_followup_keyboard,
     delivery_help_keyboard, describe_pending_admin_action, guided_assignee_keyboard,
     guided_assignee_suggestions_keyboard, guided_confirmation_keyboard, guided_deadline_keyboard,
-    main_menu_keyboard, outcome_keyboard, quick_capture_keyboard, registration_link_keyboard,
-    task_detail_keyboard, task_list_keyboard, voice_confirmation_keyboard, voice_edit_keyboard,
+    guided_description_keyboard, main_menu_keyboard, outcome_keyboard, quick_capture_keyboard,
+    registration_link_keyboard, task_detail_keyboard, task_list_keyboard,
+    voice_confirmation_keyboard, voice_edit_keyboard,
 };
 pub use ui_text::{
     admin_access_denied_text, admin_account_deactivated_text, admin_action_cancelled_text,

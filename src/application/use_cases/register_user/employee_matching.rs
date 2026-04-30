@@ -137,7 +137,7 @@ mod tests {
     use chrono::Utc;
 
     use super::{normalize_person_name, resolve_registration_match, RegistrationEmployeeMatch};
-    use crate::domain::employee::Employee;
+    use crate::domain::employee::{Employee, EmployeeSource};
     use crate::domain::message::{IncomingMessage, MessageContent};
 
     #[test]
@@ -189,6 +189,7 @@ mod tests {
             phone: None,
             department: None,
             is_active: true,
+            source: EmployeeSource::GoogleSheets,
             synced_at: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),

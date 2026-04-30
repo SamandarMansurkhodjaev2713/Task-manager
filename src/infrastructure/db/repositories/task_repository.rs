@@ -69,6 +69,22 @@ impl SqliteTaskRepository {
         builder.push_bind(i64::from(limit));
         builder
     }
+
+    fn list_active_query(cursor: Option<String>, limit: u32) -> QueryBuilder<'static, Sqlite> {
+        let mut builder = QueryBuilder::<Sqlite>::new(format!(
+            "SELECT {TASK_COLUMNS} FROM tasks \
+             WHERE status NOT IN ('completed', 'cancelled')"
+        ));
+
+        if let Some(cursor_value) = cursor {
+            builder.push(" AND task_uid < ");
+            builder.push_bind(cursor_value);
+        }
+
+        builder.push(" ORDER BY task_uid DESC LIMIT ");
+        builder.push_bind(i64::from(limit));
+        builder
+    }
 }
 
 #[async_trait::async_trait]
@@ -263,6 +279,16 @@ impl TaskRepository for SqliteTaskRepository {
 
     async fn list_all(&self, cursor: Option<String>, limit: u32) -> AppResult<Vec<Task>> {
         let mut query = Self::list_all_query(cursor, limit);
+        let rows = query
+            .build_query_as::<TaskRow>()
+            .fetch_all(&self.pool)
+            .await
+            .map_err(database_error)?;
+        rows.into_iter().map(TryInto::try_into).collect()
+    }
+
+    async fn list_active(&self, cursor: Option<String>, limit: u32) -> AppResult<Vec<Task>> {
+        let mut query = Self::list_active_query(cursor, limit);
         let rows = query
             .build_query_as::<TaskRow>()
             .fetch_all(&self.pool)

@@ -141,10 +141,17 @@ Use when:
 Voice is a first-class creation flow:
 
 1. user sends a voice message
-2. the bot transcribes it
-3. the bot shows one confirmation screen with the interpreted description, assignee, deadline, and any ambiguity warning
-4. the user can confirm, edit, or cancel
-5. only then is the task created
+2. the bot shows a transient **Processing** screen while transcribing
+3. on success the bot shows a **Confirmation** screen with the raw transcript and the
+   interpreted description, assignee, and deadline
+4. if the assignee interpretation is ambiguous, an **AssigneeOptions** screen is inserted
+5. if the user taps "Исправить", an **Edit** screen lets them correct the transcript text
+6. the user confirms or cancels; only then is the task created
+
+> **Phase 3 target:** steps 2–5 collapse into a single confirmation screen that already
+> includes the parsed interpretation and any ambiguity warning inline.
+> Until that work ships, the flow has two mandatory screens (Processing + Confirmation)
+> and up to two optional ones (AssigneeOptions, Edit).
 
 If the interpreted assignee is unsafe:
 - the bot does not create the task yet

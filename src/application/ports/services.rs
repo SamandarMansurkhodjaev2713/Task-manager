@@ -66,3 +66,24 @@ pub struct GeneratedTask {
     pub raw_response: String,
     pub structured_task: StructuredTaskDraft,
 }
+
+/// Write-back gateway: appends a row representing a `bot_registered` employee
+/// to the Google Sheets directory so that operator-managed spreadsheets stay
+/// in sync after a user self-registers through the bot.
+///
+/// The concrete adapter is [`GoogleSheetsWriteBackClient`].  When write-back
+/// is not configured (missing `GOOGLE_SHEETS_WRITE_BACK_RANGE` or
+/// `GOOGLE_SHEETS_BEARER_TOKEN`), the application wires in a no-op stub so
+/// the rest of the codebase never has to check for `None`.
+#[async_trait]
+pub trait SheetsWriteBackGateway: Send + Sync {
+    /// Appends one employee row to the configured write-back range.
+    /// Implementations are responsible for rate limiting and retries; the
+    /// use case layer only calls this once per pending row per flush cycle.
+    async fn append_employee_row(
+        &self,
+        full_name: &str,
+        telegram_username: Option<&str>,
+        telegram_id: i64,
+    ) -> AppResult<()>;
+}

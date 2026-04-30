@@ -22,6 +22,8 @@ use crate::application::use_cases::reassign_task::ReassignTaskUseCase;
 use crate::application::use_cases::register_user::RegisterUserUseCase;
 use crate::application::use_cases::report_task_blocker::ReportTaskBlockerUseCase;
 use crate::application::use_cases::search_tasks::SearchTasksUseCase;
+use crate::application::use_cases::seed_aliases::SeedAliasesUseCase;
+use crate::application::use_cases::sheets_write_back::SheetsWriteBackUseCase;
 use crate::application::use_cases::sync_employees::SyncEmployeesUseCase;
 use crate::application::use_cases::update_sla_states::UpdateSlaStatesUseCase;
 use crate::application::use_cases::update_task_status::UpdateTaskStatusUseCase;
@@ -34,15 +36,17 @@ use crate::infrastructure::ai::openai_transcription_client::OpenAiTranscriptionC
 use crate::infrastructure::clock::system_clock::SystemClock;
 use crate::infrastructure::db::pool::connect;
 use crate::infrastructure::db::repositories::{
-    SqliteAdminAuditLogRepository, SqliteAuditLogRepository, SqliteCommentRepository,
-    SqliteEmployeeRepository, SqliteFeatureFlagRepository, SqliteNotificationRepository,
-    SqliteRecurrenceRepository, SqliteSecurityAuditLogRepository, SqliteSlaRepository,
+    SqliteAdminAuditLogRepository, SqliteAliasRepository, SqliteAssigneeHistoryRepository,
+    SqliteAuditLogRepository, SqliteCommentRepository, SqliteEmployeeRepository,
+    SqliteFeatureFlagRepository, SqliteNotificationRepository, SqliteRecurrenceRepository,
+    SqliteSecurityAuditLogRepository, SqliteSheetsSyncRepository, SqliteSlaRepository,
     SqliteTaskRepository, SqliteUserRepository,
 };
 use crate::infrastructure::employee_directory::google_sheets_client::GoogleSheetsEmployeeDirectory;
 use crate::infrastructure::employee_directory::local_directory::LocalEmployeeDirectory;
+use crate::infrastructure::employee_directory::sheets_write_back_client::GoogleSheetsWriteBackClient;
 use crate::infrastructure::logging::init_metrics;
-use crate::infrastructure::scheduler::BackgroundJobs;
+use crate::infrastructure::scheduler::{BackgroundJobUseCases, BackgroundJobs};
 use crate::infrastructure::telegram::bot_gateway::TeloxideNotifier;
 use crate::presentation::http::spawn_http_server;
 use crate::presentation::telegram::active_screens::ActiveScreenStore;
@@ -69,6 +73,9 @@ pub async fn run_application(config: AppConfig) -> AppResult<()> {
     let admin_audit_repository = Arc::new(SqliteAdminAuditLogRepository::new(pool.clone()));
     let feature_flag_repository = Arc::new(SqliteFeatureFlagRepository::new(pool.clone()));
     let security_audit_repository = Arc::new(SqliteSecurityAuditLogRepository::new(pool.clone()));
+    let alias_repository = Arc::new(SqliteAliasRepository::new(pool.clone()));
+    let assignee_history_repository = Arc::new(SqliteAssigneeHistoryRepository::new(pool.clone()));
+    let sheets_sync_repository = Arc::new(SqliteSheetsSyncRepository::new(pool.clone()));
 
     // ── Feature flags ─────────────────────────────────────────────────────
     // Build the in-memory registry from ENV defaults, then layer in any
@@ -97,10 +104,11 @@ pub async fn run_application(config: AppConfig) -> AppResult<()> {
         .execute(&config.security.admin_ids)
         .await?;
 
-    let assignee_resolver = Arc::new(AssigneeResolver::new(
-        user_repository.clone(),
-        employee_repository.clone(),
-    ));
+    let assignee_resolver = Arc::new(
+        AssigneeResolver::new(user_repository.clone(), employee_repository.clone())
+            .with_aliases(alias_repository.clone())
+            .with_history(assignee_history_repository),
+    );
     let directory_digest_provider: Arc<
         dyn crate::application::ports::services::DirectoryDigestProvider,
     > = Arc::new(EmployeeDirectoryDigest::new(employee_repository.clone()));
@@ -122,11 +130,50 @@ pub async fn run_application(config: AppConfig) -> AppResult<()> {
     > = if is_placeholder(&config.google_sheets.spreadsheet_id)
         || (config.google_sheets.api_key.is_none() && config.google_sheets.bearer_token.is_none())
     {
-        Arc::new(LocalEmployeeDirectory)
+        match config.google_sheets.local_csv_path.clone() {
+            Some(path) => {
+                tracing::info!(path, "using local employee directory CSV fallback");
+                Arc::new(LocalEmployeeDirectory::from_csv(path))
+            }
+            None => Arc::new(LocalEmployeeDirectory::empty()),
+        }
     } else {
         Arc::new(GoogleSheetsEmployeeDirectory::new(
             config.google_sheets.clone(),
         )?)
+    };
+
+    // ── Sheets write-back ─────────────────────────────────────────────────
+    // Only active when write_back_range AND bearer_token are both configured.
+    let sheets_write_back = {
+        let range = config.google_sheets.write_back_range.as_deref();
+        let has_sheet = !is_placeholder(&config.google_sheets.spreadsheet_id);
+        let has_bearer = config.google_sheets.bearer_token.is_some();
+        if let (Some(range), true, true) = (range, has_sheet, has_bearer) {
+            match GoogleSheetsWriteBackClient::new(config.google_sheets.clone(), range.to_owned()) {
+                Ok(gateway) => {
+                    tracing::info!(range, "sheets write-back enabled");
+                    Arc::new(SheetsWriteBackUseCase::new(
+                        sheets_sync_repository.clone(),
+                        Arc::new(gateway),
+                    ))
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        code = error.code(),
+                        "sheets write-back gateway failed to build; running disabled"
+                    );
+                    Arc::new(SheetsWriteBackUseCase::disabled(
+                        sheets_sync_repository.clone(),
+                    ))
+                }
+            }
+        } else {
+            tracing::info!("sheets write-back disabled (GOOGLE_SHEETS_WRITE_BACK_RANGE or GOOGLE_SHEETS_BEARER_TOKEN not set)");
+            Arc::new(SheetsWriteBackUseCase::disabled(
+                sheets_sync_repository.clone(),
+            ))
+        }
     };
 
     let bot = Bot::new(config.telegram.bot_token.expose_secret());
@@ -180,7 +227,7 @@ pub async fn run_application(config: AppConfig) -> AppResult<()> {
         task_repository.clone(),
         notification_repository.clone(),
         audit_log_repository.clone(),
-        assignee_resolver,
+        assignee_resolver.clone(),
     ));
     let collect_stats_use_case = Arc::new(CollectStatsUseCase::new(task_repository.clone()));
     let register_user_use_case = Arc::new(RegisterUserUseCase::new(
@@ -205,9 +252,33 @@ pub async fn run_application(config: AppConfig) -> AppResult<()> {
     ));
     let search_tasks_use_case = Arc::new(SearchTasksUseCase::new(task_repository.clone()));
     let sync_employees_use_case = Arc::new(SyncEmployeesUseCase::new(
-        employee_repository,
+        employee_repository.clone(),
         employee_directory_gateway,
     ));
+
+    // Load the employee directory once before Telegram starts accepting
+    // updates. This makes Docker/demo deployments immediately usable and lets
+    // alias seeding bind short names to real employee IDs on the same startup
+    // rather than requiring a second restart.
+    match sync_employees_use_case.execute().await {
+        Ok(count) => tracing::info!(count, "initial employee sync completed"),
+        Err(error) => tracing::warn!(
+            code = error.code(),
+            "initial employee sync failed; background scheduler will retry"
+        ),
+    }
+
+    // Phase 2: seed Russian diminutive aliases (idempotent). Runs best-effort:
+    // failure logs a warning but does not abort startup.
+    let seed_aliases_use_case =
+        SeedAliasesUseCase::new(employee_repository.clone(), alias_repository.clone());
+    if let Err(error) = seed_aliases_use_case.execute().await {
+        tracing::warn!(
+            code = error.code(),
+            "seed_aliases failed; aliases will not be available until next restart"
+        );
+    }
+
     let process_notifications_use_case = Arc::new(ProcessNotificationsUseCase::new(
         notification_repository.clone(),
         user_repository.clone(),
@@ -243,12 +314,15 @@ pub async fn run_application(config: AppConfig) -> AppResult<()> {
 
     let background_jobs = BackgroundJobs::start(
         config.scheduler.clone(),
-        sync_employees_use_case.clone(),
-        process_notifications_use_case.clone(),
-        enqueue_task_reminders_use_case,
-        enqueue_daily_summaries_use_case,
-        update_sla_states_use_case,
-        process_recurrence_rules_use_case,
+        BackgroundJobUseCases {
+            sync_employees: sync_employees_use_case.clone(),
+            process_notifications: process_notifications_use_case.clone(),
+            enqueue_task_reminders: enqueue_task_reminders_use_case,
+            enqueue_daily_summaries: enqueue_daily_summaries_use_case,
+            update_sla_states: update_sla_states_use_case,
+            process_recurrence_rules: process_recurrence_rules_use_case,
+            sheets_write_back: sheets_write_back.clone(),
+        },
     );
     let http_server = spawn_http_server(config.http_server.clone(), metrics_handle, pool.clone());
     let telegram_runtime = TelegramRuntime {
@@ -260,6 +334,8 @@ pub async fn run_application(config: AppConfig) -> AppResult<()> {
         creation_sessions: CreationSessionStore::default(),
         task_interactions: TaskInteractionSessionStore::default(),
         admin_nonce_store: AdminNonceStore::new(config.security.admin_nonce_ttl_seconds),
+        assignee_resolver,
+        sheets_write_back,
         register_user_use_case,
         onboarding_use_case,
         create_task_use_case,

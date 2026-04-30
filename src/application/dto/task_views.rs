@@ -61,6 +61,10 @@ pub struct EmployeeCandidateView {
     pub full_name: String,
     pub telegram_username: Option<String>,
     pub confidence: u8,
+    /// Number of non-terminal tasks currently assigned to this employee.
+    /// `None` when workload data was not fetched (e.g. in-band calls where
+    /// a second async query would be too expensive).
+    pub active_task_count: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -171,6 +175,15 @@ impl EmployeeCandidateView {
             full_name: value.employee.full_name.clone(),
             telegram_username: value.employee.telegram_username.clone(),
             confidence: value.confidence,
+            active_task_count: None,
+        }
+    }
+
+    /// Variant that includes workload context for richer UI labels.
+    pub fn from_match_with_workload(value: &EmployeeMatch, active_task_count: u32) -> Self {
+        Self {
+            active_task_count: Some(active_task_count),
+            ..Self::from_match(value)
         }
     }
 }

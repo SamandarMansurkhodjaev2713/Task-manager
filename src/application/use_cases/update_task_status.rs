@@ -163,28 +163,36 @@ fn notification_type_for_status(next_status: TaskStatus) -> NotificationType {
 
 fn build_status_message(previous_status: TaskStatus, next_status: TaskStatus) -> String {
     if next_status == TaskStatus::InReview {
-        return format!(
-            "Задача отправлена на проверку: {} -> {}",
-            previous_status, next_status
-        );
+        return "✅ Задача отправлена на проверку".to_owned();
     }
 
     format!(
-        "Статус задачи обновлён: {} -> {}",
-        previous_status, next_status
+        "Статус обновлён: «{}» → «{}»",
+        previous_status.display_ru(),
+        next_status.display_ru()
     )
 }
 
 fn build_participant_notification(task: &Task, next_status: TaskStatus) -> String {
     match next_status {
         TaskStatus::InReview => {
-            format!("Задача «{}» готова и ждёт вашей проверки.", task.title)
+            format!("📋 Задача «{}» готова и ждёт вашей проверки.", task.title)
         }
-        TaskStatus::Completed => format!("Задача «{}» принята и завершена.", task.title),
-        TaskStatus::Blocked => format!("По задаче «{}» зафиксирован блокер.", task.title),
-        TaskStatus::Cancelled => format!("Задача «{}» отменена.", task.title),
+        TaskStatus::Completed => {
+            format!("✅ Задача «{}» принята и завершена.", task.title)
+        }
+        TaskStatus::Blocked => {
+            format!("🚧 По задаче «{}» зафиксирован блокер.", task.title)
+        }
+        TaskStatus::Cancelled => {
+            format!("❌ Задача «{}» отменена.", task.title)
+        }
         TaskStatus::Created | TaskStatus::Sent | TaskStatus::InProgress => {
-            format!("Задача «{}» теперь в статусе {}.", task.title, next_status)
+            format!(
+                "ℹ️ Задача «{}» теперь «{}».",
+                task.title,
+                next_status.display_ru()
+            )
         }
     }
 }

@@ -169,8 +169,16 @@ async fn handle_guided_assignee_step(
         Ok(AssigneeResolution::Resolved(resolved)) => {
             // Unique high-confidence match (≥ 95%) — store the employee ID
             // and advance to Description without interrupting the user.
+            // We use the resolved employee's full name as the display name
+            // so the confirmation screen shows "Abdullazi Zazizov" instead
+            // of the raw abbreviation (e.g. "ABD") the user typed.
             let employee_id = resolved.employee.as_ref().and_then(|e| e.id);
-            let updated = update_guided_assignee_resolved(draft, value, employee_id);
+            let display_name = resolved
+                .employee
+                .as_ref()
+                .map(|e| e.full_name.as_str())
+                .unwrap_or(value);
+            let updated = update_guided_assignee_resolved(draft, display_name, employee_id);
             state
                 .creation_sessions
                 .update_guided(chat_id.0, updated)
@@ -181,7 +189,7 @@ async fn handle_guided_assignee_step(
                 chat_id,
                 ScreenDescriptor::GuidedStep(GuidedTaskStep::Description),
                 &ui::guided_description_prompt(),
-                ui::create_menu_keyboard(),
+                ui::guided_description_keyboard(),
             )
             .await
         }
@@ -218,7 +226,7 @@ async fn handle_guided_assignee_step(
                 chat_id,
                 ScreenDescriptor::GuidedStep(GuidedTaskStep::Description),
                 &ui::guided_description_prompt(),
-                ui::create_menu_keyboard(),
+                ui::guided_description_keyboard(),
             )
             .await
         }
@@ -239,7 +247,7 @@ async fn handle_guided_description_step(
             chat_id,
             ScreenDescriptor::GuidedStep(GuidedTaskStep::Description),
             validation_message,
-            ui::create_menu_keyboard(),
+            ui::guided_description_keyboard(),
         )
         .await;
     }
@@ -278,15 +286,21 @@ fn update_guided_assignee(mut draft: GuidedTaskDraft, value: &str) -> GuidedTask
     draft
 }
 
-/// Stores both the raw assignee text and the pre-resolved employee ID.
+/// Stores the resolved employee's display name and pre-resolved employee ID.
+///
+/// `display_name` is the employee's canonical full name (e.g. "Abdullazi
+/// Zazizov"), NOT the raw abbreviation the user typed (e.g. "ABD").
+/// This ensures that the confirmation screen (`guided_confirmation_text`)
+/// shows a readable name rather than a cryptic abbreviation.
+///
 /// Used when `preview_assignee_resolution` returns a unique high-confidence
 /// match so `submit()` can bypass the fuzzy matcher entirely.
 fn update_guided_assignee_resolved(
     mut draft: GuidedTaskDraft,
-    raw_value: &str,
+    display_name: &str,
     employee_id: Option<i64>,
 ) -> GuidedTaskDraft {
-    draft.assignee = Some(raw_value.to_owned());
+    draft.assignee = Some(display_name.to_owned());
     draft.resolved_employee_id = employee_id;
     draft.step = GuidedTaskStep::Description;
     draft
@@ -336,13 +350,64 @@ fn validate_guided_description(value: &str) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_guided_description;
+    use super::{update_guided_assignee_resolved, validate_guided_description};
+    use crate::presentation::telegram::drafts::{GuidedTaskDraft, GuidedTaskStep};
 
     #[test]
     fn given_too_short_description_when_validating_then_returns_hint() {
         let validation = validate_guided_description("сделать");
 
         assert!(validation.is_some());
+    }
+
+    /// When an auto-resolved high-confidence match is stored, the draft must
+    /// carry the employee's *full name*, not the raw abbreviation the user
+    /// typed.  This ensures the confirmation screen renders "Abdullazi Zazizov"
+    /// rather than "ABD".
+    #[test]
+    fn given_prefix_match_when_resolved_then_draft_stores_full_name_not_abbreviation() {
+        let draft = GuidedTaskDraft::new();
+
+        let updated = update_guided_assignee_resolved(draft, "Abdullazi Zazizov", Some(42));
+
+        assert_eq!(
+            updated.assignee.as_deref(),
+            Some("Abdullazi Zazizov"),
+            "draft must store the resolved full name, not the raw typed abbreviation"
+        );
+        assert_eq!(
+            updated.resolved_employee_id,
+            Some(42),
+            "pre-resolved employee ID must be preserved"
+        );
+        assert_eq!(
+            updated.step,
+            GuidedTaskStep::Description,
+            "step must advance to Description"
+        );
+    }
+
+    /// When the resolution service fails and we fall back to the raw text path,
+    /// the draft stores the raw query (not a full name) — this is the safe
+    /// degradation path; the fuzzy matcher handles it at submit time.
+    #[test]
+    fn given_fallback_path_when_raw_text_stored_then_no_resolved_id() {
+        use super::update_guided_assignee;
+
+        let draft = GuidedTaskDraft::new();
+
+        let updated = update_guided_assignee(draft, "ABD");
+
+        assert_eq!(
+            updated.assignee.as_deref(),
+            Some("ABD"),
+            "fallback path stores the raw typed text"
+        );
+        assert_eq!(
+            updated.resolved_employee_id, None,
+            "fallback path must not set a resolved employee ID"
+        );
+        assert_eq!(updated.step, GuidedTaskStep::Description);
     }
 
     #[test]

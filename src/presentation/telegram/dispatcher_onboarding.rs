@@ -122,6 +122,29 @@ async fn announce_completion(
     chat_id: ChatId,
     actor: &User,
 ) -> Result<(), teloxide::RequestError> {
+    // Enqueue a Sheets write-back when the user completed onboarding and has a
+    // linked employee record.  This is best-effort: errors are logged but never
+    // propagated to the user, so a misconfigured Sheets credential does not
+    // break the onboarding flow.
+    if let Some(employee_id) = actor.linked_employee_id {
+        if let Err(error) = state
+            .sheets_write_back
+            .enqueue(
+                employee_id,
+                actor.telegram_id,
+                actor.full_name.as_deref().unwrap_or(""),
+                actor.telegram_username.as_deref(),
+            )
+            .await
+        {
+            tracing::warn!(
+                employee_id,
+                code = error.code(),
+                "sheets write-back enqueue failed after onboarding"
+            );
+        }
+    }
+
     // Must use the same transport as other onboarding screens so the per-update
     // UX barrier is consumed.  A raw `send_message` left the barrier unspent so
     // a follow-up `send_error` on the same update could still fire — the
@@ -132,7 +155,7 @@ async fn announce_completion(
         chat_id,
         ScreenDescriptor::MainMenu,
         &ui::onboarding_completed_text(actor),
-        teloxide::types::InlineKeyboardMarkup::default(),
+        ui::main_menu_keyboard(actor),
     )
     .await
 }

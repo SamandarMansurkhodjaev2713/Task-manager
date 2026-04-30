@@ -1,15 +1,23 @@
 use std::sync::Arc;
 
 use crate::application::dto::task_views::{ClarificationRequest, EmployeeCandidateView};
-use crate::application::ports::repositories::{EmployeeRepository, UserRepository};
+use crate::application::ports::repositories::{
+    AliasRepository, AssigneeHistoryRepository, EmployeeRepository, UserRepository,
+};
 use crate::domain::employee::Employee;
 use crate::domain::errors::AppResult;
-use crate::domain::name_matching::{match_employee_name, rank_outcome, RankedOutcome};
+use crate::domain::name_matching::{match_employee_name_with_aliases, rank_outcome, RankedOutcome};
 use crate::domain::user::User;
 
 pub struct AssigneeResolver {
     user_repository: Arc<dyn UserRepository>,
     employee_repository: Arc<dyn EmployeeRepository>,
+    /// Optional alias repository.  When present the resolver runs the alias
+    /// pre-check before falling through to fuzzy matching.
+    alias_repository: Option<Arc<dyn AliasRepository>>,
+    /// Optional history repository.  When present, confirmed assignments are
+    /// recorded so future resolutions can surface "recently used" employees.
+    history_repository: Option<Arc<dyn AssigneeHistoryRepository>>,
 }
 
 pub struct ResolvedAssignee {
@@ -36,7 +44,23 @@ impl AssigneeResolver {
         Self {
             user_repository,
             employee_repository,
+            alias_repository: None,
+            history_repository: None,
         }
+    }
+
+    /// Builder: attach an alias repository so that registered short-form names
+    /// ("Ваня", "Саша") are resolved before the fuzzy chain runs.
+    pub fn with_aliases(mut self, repo: Arc<dyn AliasRepository>) -> Self {
+        self.alias_repository = Some(repo);
+        self
+    }
+
+    /// Builder: attach an assignee history repository so that confirmed
+    /// assignments are recorded for frequency-based surfacing in future calls.
+    pub fn with_history(mut self, repo: Arc<dyn AssigneeHistoryRepository>) -> Self {
+        self.history_repository = Some(repo);
+        self
     }
 
     pub async fn resolve_for_creation(&self, query: &str) -> AppResult<AssigneeResolution> {
@@ -47,6 +71,70 @@ impl AssigneeResolver {
     pub async fn resolve_for_reassignment(&self, query: &str) -> AppResult<AssigneeResolution> {
         self.resolve_with_purpose(query, AssigneeResolutionPurpose::Reassignment)
             .await
+    }
+
+    /// Returns the top matching employees for `query` as a flat list suitable
+    /// for populating Telegram inline query results.
+    ///
+    /// Unlike `resolve_*` methods this never returns a `ClarificationRequired`
+    /// — it always gives the caller the raw ranked candidates so they can
+    /// decide how to render them.  Returns an empty vec when no matches exceed
+    /// the suggestion confidence floor.
+    pub async fn search_employees(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> AppResult<Vec<crate::domain::employee::EmployeeMatch>> {
+        let normalized_query = query.trim();
+        if normalized_query.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let employees = self.employee_repository.list_active().await?;
+        let raw_outcome = if let Some(alias_repo) = &self.alias_repository {
+            let aliases = alias_repo.list_all().await.unwrap_or_default();
+            match_employee_name_with_aliases(normalized_query, &employees, &aliases)
+        } else {
+            crate::domain::name_matching::match_employee_name(normalized_query, &employees)
+        };
+
+        use crate::domain::employee::EmployeeMatchOutcome;
+        use crate::domain::name_matching::SUGGESTED_CONFIDENCE_THRESHOLD;
+        let candidates: Vec<_> = match raw_outcome {
+            EmployeeMatchOutcome::Unique(m) => vec![m],
+            EmployeeMatchOutcome::Ambiguous(list) => list,
+            EmployeeMatchOutcome::NotFound => Vec::new(),
+        };
+
+        Ok(candidates
+            .into_iter()
+            .filter(|m| m.confidence >= SUGGESTED_CONFIDENCE_THRESHOLD)
+            .take(limit)
+            .collect())
+    }
+
+    /// Record that `creator_user_id` confirmed an assignment to `employee_id`.
+    /// Errors are swallowed and logged — history recording is best-effort and
+    /// must never propagate to the caller as a task-creation failure.
+    pub async fn record_confirmed_assignment(
+        &self,
+        creator_user_id: i64,
+        employee_id: i64,
+        now: chrono::DateTime<chrono::Utc>,
+    ) {
+        if let Some(repo) = &self.history_repository {
+            if let Err(error) = repo
+                .record_assignment(creator_user_id, employee_id, now)
+                .await
+            {
+                tracing::warn!(
+                    creator_user_id,
+                    employee_id,
+                    code = error.code(),
+                    "failed to record assignee history"
+                );
+            }
+        }
     }
 
     pub async fn resolve_employee_id(&self, employee_id: i64) -> AppResult<ResolvedAssignee> {
@@ -75,7 +163,18 @@ impl AssigneeResolver {
         }
 
         let employees = self.employee_repository.list_active().await?;
-        let raw_outcome = match_employee_name(normalized_query, &employees);
+
+        // If an alias repository is wired in, run the alias pre-check first.
+        // The alias-aware function falls through to `match_employee_name` when
+        // no alias matches, so the result is always correct regardless of
+        // whether aliases are configured.
+        let raw_outcome = if let Some(alias_repo) = &self.alias_repository {
+            let aliases = alias_repo.list_all().await.unwrap_or_default();
+            match_employee_name_with_aliases(normalized_query, &employees, &aliases)
+        } else {
+            crate::domain::name_matching::match_employee_name(normalized_query, &employees)
+        };
+
         let ranked = rank_outcome(raw_outcome);
         match ranked {
             RankedOutcome::Unique(candidate) => {
@@ -155,6 +254,15 @@ async fn resolve_user_from_employee(
     user_repository: &dyn UserRepository,
     employee: &Employee,
 ) -> AppResult<Option<User>> {
+    if let Some(employee_id) = employee.id {
+        if let Some(user) = user_repository
+            .find_by_linked_employee_id(employee_id)
+            .await?
+        {
+            return Ok(Some(user));
+        }
+    }
+
     let Some(username) = employee.telegram_username.as_deref() else {
         return Ok(None);
     };

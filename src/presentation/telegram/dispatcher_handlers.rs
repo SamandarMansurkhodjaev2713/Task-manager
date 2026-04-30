@@ -105,7 +105,28 @@ pub(crate) async fn register_actor(
             .execute_with_link_decision(incoming_message, decision)
             .await
         {
-            Ok(actor) => Ok(RegistrationResult::Ready(Box::new(actor))),
+            Ok(actor) => {
+                // Primary deactivation gate — checked once for every update so no
+                // individual use case needs to duplicate the check.  Use cases still
+                // call `ensure_active` as defence-in-depth, but this guard is the
+                // authoritative block that prevents any screen from rendering for
+                // a deactivated account.
+                if actor.deactivated_at.is_some() {
+                    tracing::info!(
+                        telegram_id = actor.telegram_id,
+                        "deactivated account attempted an action — request blocked"
+                    );
+                    let _ = bot
+                        .send_message(
+                            teloxide::types::ChatId(incoming_message.chat_id),
+                            "⛔ Ваш аккаунт деактивирован.\n\
+                             Обратитесь к администратору для восстановления доступа.",
+                        )
+                        .await;
+                    return Ok(RegistrationResult::Aborted);
+                }
+                Ok(RegistrationResult::Ready(Box::new(actor)))
+            }
             Err(error) => {
                 send_error(bot, state, incoming_message.chat_id, error).await?;
                 Ok(RegistrationResult::Aborted)
@@ -520,14 +541,6 @@ pub(crate) async fn handle_callback_action(
         | TelegramCallback::VoiceCreateEdit
         | TelegramCallback::VoiceCreateBack
         | TelegramCallback::VoiceCreateCancel => {
-            if !state
-                .feature_flags
-                .read()
-                .await
-                .is_enabled(FeatureFlag::VoiceV2)
-            {
-                return show_main_menu(bot, state, &actor, chat_id).await;
-            }
             match callback {
                 TelegramCallback::VoiceCreateConfirm => {
                     VoiceCreateCoordinator::new(bot, state)
