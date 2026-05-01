@@ -36,8 +36,8 @@ use super::dispatcher_interactions::{
     start_task_blocker_input, start_task_comment_input, start_task_reassign_input,
 };
 use super::dispatcher_navigation::{
-    show_create_menu, show_help, show_main_menu, show_main_menu_fresh, show_settings, show_stats,
-    show_task_list, sync_employees,
+    show_create_menu, show_help, show_help_section, show_main_menu, show_main_menu_fresh,
+    show_settings, show_stats, show_task_list, sync_employees,
 };
 use super::dispatcher_task_views::{
     confirm_task_cancel, execute_cancel_from_command, show_delivery_help, show_task_details,
@@ -555,6 +555,9 @@ pub(crate) async fn handle_callback_action(
     match callback {
         TelegramCallback::MenuHome => show_main_menu(bot, state, &actor, chat_id).await,
         TelegramCallback::MenuHelp => show_help(bot, state, chat_id, &actor).await,
+        TelegramCallback::MenuHelpSection { section } => {
+            show_help_section(bot, state, chat_id, &actor, section).await
+        }
         TelegramCallback::MenuSettings => show_settings(bot, state, chat_id, &actor).await,
         TelegramCallback::MenuStats => {
             show_stats(bot, state, &actor, chat_id, StatsScope::Personal).await

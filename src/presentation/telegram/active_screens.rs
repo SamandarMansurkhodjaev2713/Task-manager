@@ -5,7 +5,9 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::application::use_cases::collect_stats::StatsScope;
-use crate::presentation::telegram::callbacks::{TaskCardMode, TaskListOrigin, TelegramCallback};
+use crate::presentation::telegram::callbacks::{
+    HelpSection, TaskCardMode, TaskListOrigin, TelegramCallback,
+};
 use crate::presentation::telegram::drafts::{GuidedTaskStep, VoiceTaskStep};
 use crate::presentation::telegram::interactions::TaskInteractionKind;
 
@@ -49,7 +51,14 @@ pub enum ScreenDescriptor {
     /// Onboarding v2 — "enter your last name" step.
     OnboardingLastName,
     MainMenu,
+    /// Корневой экран `/help` (выбор подраздела).  Содержимое и доступные
+    /// кнопки зависят от роли актора, но сам descriptor одинаковый.
     Help,
+    /// Подраздел справки (открыт через [`TelegramCallback::MenuHelpSection`]).
+    /// Каждый подраздел — отдельный экран со своим back-стеком («↩️ К справке»).
+    HelpSection {
+        section: HelpSection,
+    },
     Settings,
     CreateMenu,
     QuickCreate,
@@ -112,6 +121,7 @@ impl ScreenDescriptor {
             Self::OnboardingFirstName | Self::OnboardingLastName => Stage::Onboarding,
             Self::MainMenu
             | Self::Help
+            | Self::HelpSection { .. }
             | Self::Settings
             | Self::Stats(_)
             | Self::SyncEmployeesResult
@@ -198,6 +208,7 @@ impl Stage {
                 callback,
                 CB::MenuHome
                     | CB::MenuHelp
+                    | CB::MenuHelpSection { .. }
                     | CB::MenuSettings
                     | CB::MenuStats
                     | CB::MenuTeamStats

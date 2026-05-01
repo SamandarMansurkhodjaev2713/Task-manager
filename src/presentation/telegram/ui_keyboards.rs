@@ -10,7 +10,7 @@ use crate::application::dto::task_views::{
 use crate::domain::user::{User, UserRole};
 use crate::presentation::telegram::admin_nonce_store::PendingAdminAction;
 use crate::presentation::telegram::callbacks::{
-    action_to_status, encode_callback, AdminRoleOption, DraftEditField, TaskCardMode,
+    action_to_status, encode_callback, AdminRoleOption, DraftEditField, HelpSection, TaskCardMode,
     TaskListOrigin, TelegramCallback,
 };
 
@@ -68,6 +68,60 @@ pub fn main_menu_keyboard(actor: &User) -> InlineKeyboardMarkup {
     }
 
     InlineKeyboardMarkup::new(rows)
+}
+
+/// Корневая клавиатура `/help` — список подразделов, видимых актору.
+///
+/// Универсальные разделы (Задачи, Голосовое создание, Уведомления) показываются
+/// всегда; раздел «Для менеджера» — только Manager и Admin; «Для администратора»
+/// — только Admin.  Видимость дублирует [`HelpSection::is_visible_to`], чтобы
+/// rendering и handler-side проверка опирались на единый источник правды.
+pub fn help_overview_keyboard(actor: &User) -> InlineKeyboardMarkup {
+    let mut rows: Vec<Vec<InlineKeyboardButton>> = Vec::new();
+
+    // Универсальные подразделы — две на строку, чтобы экономить вертикальное место.
+    rows.push(vec![
+        help_section_button(HelpSection::Tasks, "📋 Задачи"),
+        help_section_button(HelpSection::Voice, "🎤 Голосовое создание"),
+    ]);
+    rows.push(vec![help_section_button(
+        HelpSection::Notifications,
+        "🔔 Уведомления",
+    )]);
+
+    // Расширенные подразделы: каждый на отдельной строке, чтобы визуально
+    // подчёркивать их элевацию и не путать с обычным набором.
+    if HelpSection::Manager.is_visible_to(actor.role) {
+        rows.push(vec![help_section_button(
+            HelpSection::Manager,
+            "🧭 Для менеджера",
+        )]);
+    }
+    if HelpSection::Admin.is_visible_to(actor.role) {
+        rows.push(vec![help_section_button(
+            HelpSection::Admin,
+            "🛡 Для администратора",
+        )]);
+    }
+
+    rows.push(vec![button("🏠 В меню", TelegramCallback::MenuHome)]);
+    InlineKeyboardMarkup::new(rows)
+}
+
+/// Клавиатура внутреннего экрана подраздела справки.
+///
+/// Всегда содержит только два пути: «↩️ К справке» (возврат к overview) и
+/// «🏠 В меню» (выход из справки полностью).  Никаких mutating-кнопок —
+/// справка только читает.
+pub fn help_section_keyboard() -> InlineKeyboardMarkup {
+    InlineKeyboardMarkup::new(vec![
+        vec![button("↩️ К справке", TelegramCallback::MenuHelp)],
+        vec![button("🏠 В меню", TelegramCallback::MenuHome)],
+    ])
+}
+
+fn help_section_button(section: HelpSection, label: &str) -> InlineKeyboardButton {
+    button(label, TelegramCallback::MenuHelpSection { section })
 }
 
 pub fn create_menu_keyboard() -> InlineKeyboardMarkup {

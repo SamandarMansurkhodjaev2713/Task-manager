@@ -5,8 +5,8 @@ use crate::domain::user::User;
 use crate::presentation::telegram::drafts::GuidedTaskDraft;
 
 use super::super::ui_shared::{
-    delivery_badge, delivery_detail, CREATE_EMOJI, GUIDED_EMOJI, HELP_EMOJI, INFO_EMOJI,
-    MENU_EMOJI, QUICK_EMOJI, SETTINGS_EMOJI, SYNC_EMOJI,
+    delivery_badge, delivery_detail, CREATE_EMOJI, GUIDED_EMOJI, INFO_EMOJI, MENU_EMOJI,
+    QUICK_EMOJI, SETTINGS_EMOJI, SYNC_EMOJI,
 };
 
 pub fn welcome_text(actor: &User) -> String {
@@ -20,12 +20,6 @@ pub fn welcome_text(actor: &User) -> String {
     format!(
         "✨ Добро пожаловать, {}!\n\nЯ помогу поставить задачу, не потерять дедлайн и быстро понять, что требует внимания.\n{role_hint}\n\nВыберите, с чего начать:",
         display
-    )
-}
-
-pub fn help_text() -> String {
-    format!(
-        "{HELP_EMOJI} Как пользоваться ботом\n\n1. Откройте «🧭 Мой фокус», если хотите быстро понять, что важно прямо сейчас.\n2. Нажмите «{CREATE_EMOJI} Создать задачу», если нужно поставить новую задачу.\n3. Работайте из карточки задачи: статус, комментарий, блокер и переназначение доступны в пару нажатий.\n\nПолезные команды:\n/start — главное меню\n/menu — вернуться в меню\n/new_task <текст> — быстро создать задачу\n/status <T-0001> — открыть задачу по коду\n/cancel_task <T-0001> — отменить задачу\n/my_tasks — мои задачи\n/created_tasks — созданные мной\n/team_tasks — задачи команды\n/stats — моя статистика\n/team_stats — статистика команды\n/settings — профиль и уведомления"
     )
 }
 

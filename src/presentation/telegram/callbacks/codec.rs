@@ -3,7 +3,7 @@ use uuid::Uuid;
 use crate::domain::task::TaskStatus;
 
 use super::types::{
-    AdminRoleOption, DraftEditField, TaskCardMode, TaskListOrigin, TelegramCallback,
+    AdminRoleOption, DraftEditField, HelpSection, TaskCardMode, TaskListOrigin, TelegramCallback,
 };
 
 const CALLBACK_GROUP_MENU: &str = "m";
@@ -19,6 +19,9 @@ pub fn encode_callback(callback: &TelegramCallback) -> String {
     match callback {
         TelegramCallback::MenuHome => format!("{CALLBACK_GROUP_MENU}:home"),
         TelegramCallback::MenuHelp => format!("{CALLBACK_GROUP_MENU}:help"),
+        TelegramCallback::MenuHelpSection { section } => {
+            format!("{CALLBACK_GROUP_MENU}:hsec:{}", section.as_code())
+        }
         TelegramCallback::MenuSettings => format!("{CALLBACK_GROUP_MENU}:settings"),
         TelegramCallback::MenuStats => format!("{CALLBACK_GROUP_MENU}:stats"),
         TelegramCallback::MenuTeamStats => format!("{CALLBACK_GROUP_MENU}:team_stats"),
@@ -143,6 +146,9 @@ fn parse_callback_modern(value: &str) -> Option<TelegramCallback> {
     match parts.as_slice() {
         [CALLBACK_GROUP_MENU, "home"] => Some(TelegramCallback::MenuHome),
         [CALLBACK_GROUP_MENU, "help"] => Some(TelegramCallback::MenuHelp),
+        [CALLBACK_GROUP_MENU, "hsec", code] => Some(TelegramCallback::MenuHelpSection {
+            section: HelpSection::from_code(code)?,
+        }),
         [CALLBACK_GROUP_MENU, "settings"] => Some(TelegramCallback::MenuSettings),
         [CALLBACK_GROUP_MENU, "stats"] => Some(TelegramCallback::MenuStats),
         [CALLBACK_GROUP_MENU, "team_stats"] => Some(TelegramCallback::MenuTeamStats),
@@ -556,5 +562,34 @@ mod tests {
         let parsed = parse_callback(&encoded);
 
         assert_eq!(parsed, Some(callback));
+    }
+
+    #[test]
+    fn given_help_section_callbacks_when_roundtrip_then_each_section_preserved() {
+        use crate::presentation::telegram::callbacks::HelpSection;
+
+        for section in [
+            HelpSection::Tasks,
+            HelpSection::Voice,
+            HelpSection::Notifications,
+            HelpSection::Manager,
+            HelpSection::Admin,
+        ] {
+            let callback = TelegramCallback::MenuHelpSection { section };
+            let encoded = encode_callback(&callback);
+            let parsed = parse_callback(&encoded);
+            assert_eq!(
+                parsed,
+                Some(callback),
+                "roundtrip failed for help section {section:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn given_help_section_callback_when_unknown_code_then_parse_returns_none() {
+        // Защищаемся от мусорных кодов — устойчивость к подделанным callback'ам.
+        let parsed = parse_callback("m:hsec:totally_unknown");
+        assert_eq!(parsed, None);
     }
 }
