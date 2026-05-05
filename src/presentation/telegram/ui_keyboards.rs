@@ -357,20 +357,20 @@ pub fn guided_confirmation_keyboard() -> InlineKeyboardMarkup {
         vec![button("✅ Создать задачу", TelegramCallback::DraftSubmit)],
         vec![
             button(
-                "👤 Исполнитель",
+                "👤 Изменить исполнителя",
                 TelegramCallback::DraftEdit {
                     field: DraftEditField::Assignee,
                 },
             ),
             button(
-                "📝 Описание",
+                "📝 Изменить описание",
                 TelegramCallback::DraftEdit {
                     field: DraftEditField::Description,
                 },
             ),
         ],
         vec![button(
-            "⏰ Срок",
+            "⏰ Изменить срок",
             TelegramCallback::DraftEdit {
                 field: DraftEditField::Deadline,
             },
@@ -531,7 +531,7 @@ pub fn clarification_keyboard(
     }
 
     rows.push(vec![button(
-        "🆕 К меню создания",
+        "↩️ К меню создания",
         TelegramCallback::MenuCreate,
     )]);
     rows.push(vec![button("🏠 В меню", TelegramCallback::MenuHome)]);
@@ -562,6 +562,11 @@ pub fn registration_link_keyboard(
         )]);
     }
 
+    // Always provide an unconditional exit to the main menu so the user is
+    // never trapped on the registration screen regardless of which candidate
+    // options or "continue unlinked" variants are shown.
+    rows.push(vec![button("🏠 В меню", TelegramCallback::MenuHome)]);
+
     InlineKeyboardMarkup::new(rows)
 }
 
@@ -580,7 +585,7 @@ pub fn created_task_followup_keyboard(
 
     if allow_assign_owner {
         rows.push(vec![button(
-            "👤 Кто будет отвечать?",
+            "👤 Назначить исполнителя",
             TelegramCallback::StartTaskReassignInput {
                 task_uid: summary.task_uid,
                 origin: TaskListOrigin::Created,
@@ -663,6 +668,7 @@ pub fn admin_user_details_keyboard(target: &User) -> InlineKeyboardMarkup {
         Some(id) => id,
         None => {
             rows.push(vec![button("↩️ В панель", TelegramCallback::AdminMenu)]);
+            rows.push(vec![button("🏠 В меню", TelegramCallback::MenuHome)]);
             return InlineKeyboardMarkup::new(rows);
         }
     };
@@ -723,6 +729,7 @@ pub fn admin_confirmation_keyboard(nonce: &str) -> InlineKeyboardMarkup {
             button("❌ Отмена", TelegramCallback::AdminCancelPending),
         ],
         vec![button("↩️ В панель", TelegramCallback::AdminMenu)],
+        vec![button("🏠 В меню", TelegramCallback::MenuHome)],
     ])
 }
 

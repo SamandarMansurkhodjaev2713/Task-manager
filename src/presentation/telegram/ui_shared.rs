@@ -23,7 +23,7 @@ pub(crate) fn action_label(action: TaskActionView) -> &'static str {
         TaskActionView::ReturnToWork => "↩️ Вернуть в работу",
         TaskActionView::Cancel => "⛔ Отменить",
         TaskActionView::ReportBlocker => "🚧 Сообщить о блокере",
-        TaskActionView::AddComment => "💬 Комментарий",
+        TaskActionView::AddComment => "💬 Добавить комментарий",
         TaskActionView::Reassign => "👤 Переназначить",
     }
 }
