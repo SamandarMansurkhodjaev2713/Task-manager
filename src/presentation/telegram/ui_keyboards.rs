@@ -61,10 +61,14 @@ pub fn main_menu_keyboard(actor: &User) -> InlineKeyboardMarkup {
     }
 
     if actor.role.is_admin() {
-        rows.push(vec![button(
-            "🔄 Синхронизировать сотрудников",
-            TelegramCallback::MenuSyncEmployees,
-        )]);
+        // Группируем admin-функции на одной строке: вход в панель — слева
+        // (главный action), быстрая синхронизация справочника — справа.
+        // Так администратор сразу видит точку входа в админ-инструменты,
+        // не вспоминая команду /admin.
+        rows.push(vec![
+            button("🛡 Панель администратора", TelegramCallback::AdminMenu),
+            button("🔄 Синхронизировать", TelegramCallback::MenuSyncEmployees),
+        ]);
     }
 
     InlineKeyboardMarkup::new(rows)
@@ -665,9 +669,9 @@ pub fn admin_user_details_keyboard(target: &User) -> InlineKeyboardMarkup {
 
     let mut role_row = Vec::new();
     for role in [
-        (AdminRoleOption::User, UserRole::User, "👤 Пользователь"),
+        (AdminRoleOption::User, UserRole::User, "👤 Сотрудник"),
         (AdminRoleOption::Manager, UserRole::Manager, "🧭 Менеджер"),
-        (AdminRoleOption::Admin, UserRole::Admin, "🛡 Админ"),
+        (AdminRoleOption::Admin, UserRole::Admin, "🛡 Администратор"),
     ] {
         let (option, domain_role, label) = role;
         if target.role == domain_role {
@@ -796,12 +800,12 @@ pub fn describe_pending_admin_action(action: &PendingAdminAction) -> String {
             ..
         } => {
             let role_label = match next_role {
-                AdminRoleOption::User => "пользователь",
+                AdminRoleOption::User => "сотрудник",
                 AdminRoleOption::Manager => "менеджер",
-                AdminRoleOption::Admin => "админ",
+                AdminRoleOption::Admin => "администратор",
             };
             format!(
-                "Назначить пользователю {display_name} (tg id {target_telegram_id}) роль: {role_label}"
+                "Назначить пользователю {display_name} (tg id {target_telegram_id}) роль: {role_label}."
             )
         }
         PendingAdminAction::Deactivate {
@@ -810,7 +814,7 @@ pub fn describe_pending_admin_action(action: &PendingAdminAction) -> String {
             ..
         } => format!(
             "Деактивировать пользователя {display_name} (tg id {target_telegram_id}).\n\
-             Он потеряет доступ к боту до ручной реактивации."
+             Аккаунт перестанет работать с ботом до ручной реактивации."
         ),
         PendingAdminAction::Reactivate {
             display_name,

@@ -19,7 +19,12 @@ fn creation_confirm_body_preview(title: &str) -> String {
 pub fn task_creation_text(outcome: &TaskCreationOutcome) -> String {
     match outcome {
         TaskCreationOutcome::Created(summary) => format!(
-            "✅ Задача создана\n\nКод: {}\nСтатус: {} {}\nДоставка: {} — {}\n\n{}\n\nОткройте карточку, чтобы продолжить работу.",
+            "✅ Задача создана\n\n\
+             Код: {}\n\
+             Статус: {} {}\n\
+             Доставка: {} — {}\n\n\
+             {}\n\n\
+             Откройте карточку, чтобы продолжить работу.",
             summary.public_code,
             status_badge(summary.task.status),
             status_label(summary.task.status),
@@ -28,7 +33,10 @@ pub fn task_creation_text(outcome: &TaskCreationOutcome) -> String {
             creation_confirm_body_preview(&summary.task.title)
         ),
         TaskCreationOutcome::DuplicateFound(summary) => format!(
-            "{INFO_EMOJI} Такая задача уже есть\n\nКод: {}\nСтатус: {} {}\n\nЯ не создавал дубль. Откройте текущую карточку и продолжайте работу из неё.",
+            "{INFO_EMOJI} Такая задача уже есть\n\n\
+             Код: {}\n\
+             Статус: {} {}\n\n\
+             Дубль не создан — откройте существующую карточку и продолжайте работу из неё.",
             summary.public_code,
             status_badge(summary.task.status),
             status_label(summary.task.status),
@@ -43,7 +51,7 @@ pub fn task_creation_text(outcome: &TaskCreationOutcome) -> String {
                 .unwrap_or_default();
 
             let candidates = if request.candidates.is_empty() {
-                "Пока не вижу точного совпадения.".to_owned()
+                "Точного совпадения в справочнике не нашлось.".to_owned()
             } else {
                 request
                     .candidates
@@ -73,29 +81,31 @@ pub fn task_creation_text(outcome: &TaskCreationOutcome) -> String {
 
 pub fn list_header(origin: TaskListOrigin) -> (&'static str, &'static str) {
     match origin {
-        TaskListOrigin::Assigned => ("📥 Мои задачи", "Здесь всё, что сейчас назначено вам."),
+        TaskListOrigin::Assigned => ("📥 Мои задачи", "Всё, что назначено вам прямо сейчас."),
         TaskListOrigin::Created => (
             "📤 Созданные мной",
             "Задачи, которые вы поставили другим или себе.",
         ),
         TaskListOrigin::Team => (
             "👥 Задачи команды",
-            "Общий список команды, чтобы видеть картину целиком.",
+            "Общий список команды — чтобы видеть картину целиком.",
         ),
-        TaskListOrigin::Focus => (
-            "🧭 Мой фокус",
-            "Экран внимания: что горит, ждёт вас или может застрять.",
-        ),
+        TaskListOrigin::Focus => ("🧭 Мой фокус", "Что горит, ждёт вас или может застрять."),
         TaskListOrigin::ManagerInbox => (
             "🧪 Inbox менеджера",
-            "Здесь собраны задачи, где чаще всего нужно ваше решение.",
+            "Сюда попадают задачи, требующие вашего решения.",
         ),
     }
 }
 
 pub fn list_text(title: &str, subtitle: &str, page: &TaskListPage) -> String {
     if page.sections.is_empty() {
-        return format!("{title}\n\n{subtitle}\n\nПока здесь пусто.");
+        return format!(
+            "{title}\n\n\
+             {subtitle}\n\n\
+             Пока здесь пусто.\n\n\
+             Чтобы поставить новую задачу — нажмите «🆕 Создать задачу» в главном меню."
+        );
     }
 
     let mut lines = vec![title.to_owned(), subtitle.to_owned(), String::new()];
