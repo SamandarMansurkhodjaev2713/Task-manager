@@ -240,6 +240,13 @@ impl Stage {
                     | CB::ClarificationPickEmployee { .. }
                     | CB::ClarificationCreateUnassigned
                     | CB::GuidedAssigneeConfirm { .. }
+                    // MenuCreate is needed here so "↩️ К меню создания" and
+                    // "🆕 Ещё задача" buttons within the creation flow resolve
+                    // as Fresh rather than StaleNavigation.  Without it the
+                    // policy returns StaleNavigation and the user sees a
+                    // misleading "Открываю актуальный экран." toast even though
+                    // they intentionally pressed the button.
+                    | CB::MenuCreate
                     | CB::MenuHome
                     | CB::OpenTask { .. }
             ),
@@ -439,5 +446,37 @@ mod tests {
             }),
             "admin mutations must not cross into the registration screen"
         );
+    }
+
+    /// Regression guard for the "↩️ К меню создания" / "🆕 Ещё задача" buttons.
+    ///
+    /// `MenuCreate` must be accepted on every Stage::Creation screen so these
+    /// navigation buttons resolve as `Fresh` and do not produce a misleading
+    /// "Открываю актуальный экран." toast.
+    #[test]
+    fn given_creation_stage_when_menu_create_callback_arrives_then_it_is_accepted() {
+        use crate::presentation::telegram::drafts::{GuidedTaskStep, VoiceTaskStep};
+
+        let creation_screens = [
+            ScreenDescriptor::CreateMenu,
+            ScreenDescriptor::QuickCreate,
+            ScreenDescriptor::GuidedStep(GuidedTaskStep::Assignee),
+            ScreenDescriptor::GuidedStep(GuidedTaskStep::Description),
+            ScreenDescriptor::GuidedStep(GuidedTaskStep::Deadline),
+            ScreenDescriptor::GuidedStep(GuidedTaskStep::Confirm),
+            ScreenDescriptor::GuidedAssigneeOptions,
+            ScreenDescriptor::VoiceCreate(VoiceTaskStep::Confirm),
+            ScreenDescriptor::VoiceCreate(VoiceTaskStep::EditTranscript),
+            ScreenDescriptor::TaskCreationResult { task_uid: None },
+        ];
+
+        for screen in &creation_screens {
+            assert_eq!(screen.stage(), Stage::Creation, "screen: {screen:?}");
+            assert!(
+                screen.accepts(&TelegramCallback::MenuCreate),
+                "MenuCreate must be accepted on {screen:?} so back-to-create-menu \
+                 buttons do not produce a StaleNavigation toast"
+            );
+        }
     }
 }

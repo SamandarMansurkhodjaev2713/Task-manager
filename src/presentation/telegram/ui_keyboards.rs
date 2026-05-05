@@ -165,7 +165,7 @@ pub fn task_list_keyboard(origin: TaskListOrigin, page: &TaskListPage) -> Inline
 
     if let Some(cursor) = &page.next_cursor {
         rows.push(vec![button(
-            "Ещё задачи",
+            "⏩ Ещё задачи",
             TelegramCallback::ListTasks {
                 origin,
                 cursor: Some(cursor.clone()),
