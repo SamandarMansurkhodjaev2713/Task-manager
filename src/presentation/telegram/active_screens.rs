@@ -131,10 +131,10 @@ impl ScreenDescriptor {
             | Self::GuidedStep(_)
             | Self::GuidedAssigneeOptions
             | Self::VoiceCreate(_)
-            | Self::TaskCreationResult { .. }
-            | Self::TaskInteractionPrompt { .. } => Stage::Creation,
+            | Self::TaskCreationResult { .. } => Stage::Creation,
             Self::TaskDetail { .. }
             | Self::CancelConfirmation { .. }
+            | Self::TaskInteractionPrompt { .. }
             | Self::DeliveryHelp { .. } => Stage::TaskDetail,
             Self::AdminMenu
             | Self::AdminUsers
@@ -152,15 +152,23 @@ impl ScreenDescriptor {
     /// detail callbacks must target the *same* task_uid as the active card).
     pub fn accepts(&self, callback: &TelegramCallback) -> bool {
         match (self, callback) {
-            // TaskDetail is stricter than the stage default: the task_uid
-            // inside the callback MUST match the active card or the cancel
-            // confirmation for that card.
+            // TaskDetail / CancelConfirmation / TaskInteractionPrompt are all
+            // stricter than the stage default: the task_uid inside the callback
+            // MUST match the active card.
+            //
+            // TaskInteractionPrompt renders the full task_detail_keyboard whose
+            // action buttons carry the same task_uid, so the same defence applies:
+            // a stale button from a *different* task must not leak through.
             (
                 Self::TaskDetail {
                     task_uid: active_uid,
                     ..
                 }
                 | Self::CancelConfirmation {
+                    task_uid: active_uid,
+                    ..
+                }
+                | Self::TaskInteractionPrompt {
                     task_uid: active_uid,
                     ..
                 },
@@ -445,6 +453,71 @@ mod tests {
                 next_role: AdminRoleOption::Admin,
             }),
             "admin mutations must not cross into the registration screen"
+        );
+    }
+
+    /// Regression guard: TaskInteractionPrompt must be Stage::TaskDetail.
+    ///
+    /// The screen renders `task_detail_keyboard` whose buttons fire callbacks
+    /// like `UpdateTaskStatus` and `StartTaskCommentInput` — all task-detail
+    /// stage callbacks.  If the stage is Creation those callbacks are rejected,
+    /// making every button on the interaction prompt appear to do nothing.
+    #[test]
+    fn given_task_interaction_prompt_when_stage_checked_then_task_detail() {
+        use crate::presentation::telegram::interactions::TaskInteractionKind;
+        let uid = Uuid::now_v7();
+        let screen = ScreenDescriptor::TaskInteractionPrompt {
+            task_uid: uid,
+            origin: TaskListOrigin::Assigned,
+            kind: TaskInteractionKind::Comment,
+        };
+        assert_eq!(
+            screen.stage(),
+            Stage::TaskDetail,
+            "TaskInteractionPrompt must be Stage::TaskDetail so task-action \
+             callbacks resolve correctly"
+        );
+    }
+
+    /// Regression guard: task action callbacks from TaskInteractionPrompt must
+    /// be accepted only when they target the same task_uid.
+    #[test]
+    fn given_task_interaction_prompt_when_callback_targets_same_task_then_accepted() {
+        use crate::presentation::telegram::callbacks::TaskCardMode;
+        use crate::presentation::telegram::interactions::TaskInteractionKind;
+        let uid = Uuid::now_v7();
+        let other_uid = Uuid::now_v7();
+        let screen = ScreenDescriptor::TaskInteractionPrompt {
+            task_uid: uid,
+            origin: TaskListOrigin::Assigned,
+            kind: TaskInteractionKind::Comment,
+        };
+
+        // Same uid — must be accepted (user presses another action button on the same task)
+        assert!(
+            screen.accepts(&TelegramCallback::UpdateTaskStatus {
+                task_uid: uid,
+                next_status: crate::domain::task::TaskStatus::InProgress,
+                origin: TaskListOrigin::Assigned,
+            }),
+            "same-uid UpdateTaskStatus must be accepted on TaskInteractionPrompt"
+        );
+        assert!(
+            screen.accepts(&TelegramCallback::StartTaskBlockerInput {
+                task_uid: uid,
+                origin: TaskListOrigin::Assigned,
+            }),
+            "same-uid StartTaskBlockerInput must be accepted on TaskInteractionPrompt"
+        );
+
+        // Different uid — must be rejected (cross-task leak defence)
+        assert!(
+            !screen.accepts(&TelegramCallback::UpdateTaskStatus {
+                task_uid: other_uid,
+                next_status: crate::domain::task::TaskStatus::InProgress,
+                origin: TaskListOrigin::Assigned,
+            }),
+            "different-uid UpdateTaskStatus must be rejected on TaskInteractionPrompt"
         );
     }
 
