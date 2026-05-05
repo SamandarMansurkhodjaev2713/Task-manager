@@ -383,6 +383,7 @@ pub async fn run_application(config: AppConfig) -> AppResult<()> {
             update_sla_states: update_sla_states_use_case,
             process_recurrence_rules: process_recurrence_rules_use_case,
             sheets_write_back: sheets_write_back.clone(),
+            db_pool: pool.clone(),
         },
     );
     let http_server = spawn_http_server(config.http_server.clone(), metrics_handle, pool.clone());
@@ -419,6 +420,14 @@ pub async fn run_application(config: AppConfig) -> AppResult<()> {
             std::collections::HashMap::new(),
         )),
     };
+    // Register the default bot command menu before starting the dispatcher.
+    // This is best-effort — failure is logged but never propagated so the bot
+    // starts even if Telegram's setMyCommands endpoint is temporarily slow.
+    crate::presentation::telegram::bot_commands::register_default_commands(
+        &telegram_runtime.notifier.bot(),
+    )
+    .await;
+
     let telegram_handle = tokio::spawn(run_telegram_dispatcher(telegram_runtime));
 
     let shutdown_result = tokio::select! {

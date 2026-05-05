@@ -98,6 +98,16 @@ pub struct SchedulerConfig {
     pub daily_deadline_reminder_hour_utc: u32,
     pub daily_overdue_scan_hour_utc: u32,
     pub daily_summary_hour_utc: u32,
+    /// Directory where SQLite hot-backups are written (e.g. `data/backups`).
+    /// When `None` (the default), hot-backups are disabled.  Set
+    /// `SQLITE_BACKUP_DIR` in the environment to enable.
+    pub sqlite_backup_dir: Option<String>,
+    /// How often the backup job runs.  Default: every 6 hours.
+    pub sqlite_backup_interval_hours: NonZeroU32,
+    /// Maximum number of backup files to keep.  Oldest files are deleted
+    /// automatically once this limit is exceeded.  Default: 14 (7 days at
+    /// the default 12-hour interval).
+    pub sqlite_backup_max_files: NonZeroU32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -211,6 +221,9 @@ impl AppConfig {
                 daily_deadline_reminder_hour_utc: optional_u32("DEADLINE_REMINDER_HOUR_UTC", 9)?,
                 daily_overdue_scan_hour_utc: optional_u32("OVERDUE_SCAN_HOUR_UTC", 10)?,
                 daily_summary_hour_utc: optional_u32("DAILY_SUMMARY_HOUR_UTC", 8)?,
+                sqlite_backup_dir: optional_env("SQLITE_BACKUP_DIR"),
+                sqlite_backup_interval_hours: non_zero_u32("SQLITE_BACKUP_INTERVAL_HOURS", 6)?,
+                sqlite_backup_max_files: non_zero_u32("SQLITE_BACKUP_MAX_FILES", 14)?,
             },
             bot: BotBehaviorConfig {
                 rate_limit_per_minute: non_zero_u32(

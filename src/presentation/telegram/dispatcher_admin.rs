@@ -231,6 +231,16 @@ pub(crate) async fn execute_admin_confirmation(
 
     match result {
         Ok(ExecutionOutcome::RoleChanged(user)) => {
+            // Refresh the target user's command menu so their "/" shortcut
+            // immediately reflects the new role.  Best-effort — swallowed inside
+            // register_user_commands.
+            crate::presentation::telegram::bot_commands::register_user_commands(
+                bot,
+                user.telegram_id,
+                user.role,
+            )
+            .await;
+
             send_screen(
                 bot,
                 state,
