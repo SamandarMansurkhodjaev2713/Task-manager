@@ -2,6 +2,7 @@ use teloxide::payloads::{AnswerCallbackQuerySetters, EditMessageTextSetters, Sen
 use teloxide::prelude::{CallbackQuery, Message, Requester};
 use teloxide::types::{ChatId, InlineKeyboardMarkup, MessageId};
 use teloxide::Bot;
+use uuid::Uuid;
 
 use crate::domain::errors::AppError;
 use crate::domain::message::{IncomingMessage, MessageContent, VoiceAttachment};
@@ -136,11 +137,20 @@ pub(crate) async fn send_error(
     chat_id: i64,
     error: AppError,
 ) -> Result<(), teloxide::RequestError> {
-    // Log every application error so ops can trace root causes without exposing
-    // internal details to the end user.
+    // Generate a correlation ID so ops can cross-reference the structured log
+    // entry with the user's "I got an error" report.  The ID is short and
+    // human-copyable (first 8 hex chars of a v4 UUID).
+    let correlation_id = Uuid::new_v4();
+    let short_id = &correlation_id.to_string()[..8];
+
+    // Structured log — every field here maps to a Sentry tag / attribute so
+    // ops can aggregate, filter, and reproduce errors without trawling raw logs.
     tracing::warn!(
-        code = error.code(),
-        message = error.message(),
+        error.code = error.code(),
+        error.message = error.message(),
+        error.kind = std::any::type_name::<AppError>(),
+        chat_id,
+        correlation_id = %correlation_id,
         "application error presented to user"
     );
 
@@ -174,9 +184,12 @@ pub(crate) async fn send_error(
         AppError::Conflict { .. } => {
             "Данные изменились параллельно. Откройте экран заново и повторите действие.".to_owned()
         }
-        _ => "Произошла внутренняя ошибка. Попробуйте повторить позже; \
-             если повторяется — обратитесь к администратору."
-            .to_owned(),
+        // Internal / unknown errors: include a short correlation ID so the
+        // user can copy it when contacting the administrator.
+        _ => format!(
+            "Произошла внутренняя ошибка. Попробуйте повторить позже; \
+             если повторяется — передайте администратору код: {short_id}"
+        ),
     };
 
     bot.send_message(ChatId(chat_id), message).await?;

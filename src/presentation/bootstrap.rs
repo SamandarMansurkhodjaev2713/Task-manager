@@ -67,23 +67,62 @@ pub async fn run_application(config: AppConfig) -> AppResult<()> {
     let user_repository = Arc::new(SqliteUserRepository::new(pool.clone()));
     let employee_repository = Arc::new(SqliteEmployeeRepository::new(pool.clone()));
 
-    // ── One-shot employee reset ──────────────────────────────────────────
+    // ── One-shot employee reset (idempotency-guarded) ───────────────────
     // When the operator sets `RESET_EMPLOYEES_ON_STARTUP=true`, wipe the
     // employee directory before doing anything else.  This must run BEFORE
     // the initial Sheets/CSV sync below so we don't immediately re-import
     // the data we are trying to clear.
+    //
+    // **Idempotency guard**: we record the calendar date of each wipe in the
+    // `idempotency_keys` table.  Subsequent restarts on the same day — e.g.
+    // after a crash-loop — skip the wipe even when the flag is still `true`.
+    // This prevents the "forgot to unset the flag → restart → full wipe" foot-
+    // gun that has cost operators their employee directories.  The flag becomes
+    // effective again on the next calendar day.
     if config.bot.reset_employees_on_startup {
-        match EmployeeRepository::reset_all(employee_repository.as_ref()).await {
-            Ok(deleted) => tracing::warn!(
-                deleted,
-                "RESET_EMPLOYEES_ON_STARTUP=true: employee directory wiped clean. \
-                 Set the flag back to false to avoid wiping on the next restart."
-            ),
-            Err(error) => {
-                let code = error.code();
+        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        let idempotency_result = sqlx::query(
+            "INSERT OR IGNORE INTO idempotency_keys (use_case, key, created_at) \
+             VALUES ('system:reset_employees', ?, CURRENT_TIMESTAMP)",
+        )
+        .bind(&today)
+        .execute(&pool)
+        .await;
+
+        match idempotency_result {
+            Ok(result) if result.rows_affected() == 0 => {
+                // Row already existed → we already wiped today. Skip.
+                tracing::warn!(
+                    date = today,
+                    "RESET_EMPLOYEES_ON_STARTUP=true but wipe was already performed today; \
+                     skipping to avoid data loss on restart. \
+                     Set the flag back to false when the directory is correct."
+                );
+            }
+            Ok(_) => {
+                // New row inserted → first wipe of the day; proceed.
+                match EmployeeRepository::reset_all(employee_repository.as_ref()).await {
+                    Ok(deleted) => tracing::warn!(
+                        deleted,
+                        date = today,
+                        "RESET_EMPLOYEES_ON_STARTUP=true: employee directory wiped clean. \
+                         Set the flag back to false to avoid wiping again tomorrow."
+                    ),
+                    Err(error) => {
+                        let code = error.code();
+                        tracing::error!(
+                            code,
+                            "RESET_EMPLOYEES_ON_STARTUP=true but the wipe failed; \
+                             continuing with the existing data"
+                        );
+                    }
+                }
+            }
+            Err(db_err) => {
                 tracing::error!(
-                    code,
-                    "RESET_EMPLOYEES_ON_STARTUP=true but the wipe failed; continuing with the existing data"
+                    error = %db_err,
+                    "RESET_EMPLOYEES_ON_STARTUP=true but idempotency check failed; \
+                     skipping wipe to be safe"
                 );
             }
         }
