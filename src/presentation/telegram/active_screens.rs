@@ -131,10 +131,19 @@ impl ScreenDescriptor {
             | Self::GuidedStep(_)
             | Self::GuidedAssigneeOptions
             | Self::VoiceCreate(_)
-            | Self::TaskCreationResult { .. } => Stage::Creation,
+            | Self::TaskCreationResult { .. }
+            // TaskInteractionPrompt is intentionally kept in Stage::Creation.
+            // It serves TWO different keyboard surfaces depending on context:
+            //   1. Text-input prompt with task_detail_keyboard (comment / blocker / reassign)
+            //   2. Reassign clarification screen with clarification_keyboard
+            // The clarification keyboard's callbacks (ClarificationPickEmployee,
+            // ClarificationCreateUnassigned, MenuCreate) are Stage::Creation callbacks
+            // that would be rejected by Stage::TaskDetail.  The task-action callbacks
+            // (UpdateTaskStatus etc.) are covered by the explicit uid-matching arm in
+            // `accepts()`, which takes precedence over the stage default.
+            | Self::TaskInteractionPrompt { .. } => Stage::Creation,
             Self::TaskDetail { .. }
             | Self::CancelConfirmation { .. }
-            | Self::TaskInteractionPrompt { .. }
             | Self::DeliveryHelp { .. } => Stage::TaskDetail,
             Self::AdminMenu
             | Self::AdminUsers
@@ -456,14 +465,20 @@ mod tests {
         );
     }
 
-    /// Regression guard: TaskInteractionPrompt must be Stage::TaskDetail.
+    /// Regression guard: TaskInteractionPrompt must remain Stage::Creation.
     ///
-    /// The screen renders `task_detail_keyboard` whose buttons fire callbacks
-    /// like `UpdateTaskStatus` and `StartTaskCommentInput` — all task-detail
-    /// stage callbacks.  If the stage is Creation those callbacks are rejected,
-    /// making every button on the interaction prompt appear to do nothing.
+    /// The screen is overloaded — it serves two keyboard surfaces:
+    ///   1. task_detail_keyboard for comment / blocker text prompts
+    ///   2. clarification_keyboard for reassignment candidate selection
+    ///
+    /// The clarification keyboard contains Stage::Creation callbacks
+    /// (ClarificationPickEmployee, ClarificationCreateUnassigned, MenuCreate).
+    /// If the stage were TaskDetail those would be rejected.  Task-action
+    /// callbacks (UpdateTaskStatus etc.) are accepted via the explicit uid-
+    /// matching arm in `accepts()`, which takes precedence over the stage
+    /// default, so the stage does not need to be TaskDetail for those.
     #[test]
-    fn given_task_interaction_prompt_when_stage_checked_then_task_detail() {
+    fn given_task_interaction_prompt_when_stage_checked_then_creation() {
         use crate::presentation::telegram::interactions::TaskInteractionKind;
         let uid = Uuid::now_v7();
         let screen = ScreenDescriptor::TaskInteractionPrompt {
@@ -473,9 +488,9 @@ mod tests {
         };
         assert_eq!(
             screen.stage(),
-            Stage::TaskDetail,
-            "TaskInteractionPrompt must be Stage::TaskDetail so task-action \
-             callbacks resolve correctly"
+            Stage::Creation,
+            "TaskInteractionPrompt must stay Stage::Creation so clarification \
+             callbacks (ClarificationPickEmployee etc.) are accepted"
         );
     }
 
@@ -518,6 +533,37 @@ mod tests {
                 origin: TaskListOrigin::Assigned,
             }),
             "different-uid UpdateTaskStatus must be rejected on TaskInteractionPrompt"
+        );
+    }
+
+    /// Regression guard: clarification callbacks must be accepted on TaskInteractionPrompt.
+    ///
+    /// The reassign clarification path renders TaskInteractionPrompt with
+    /// clarification_keyboard (ClarificationPickEmployee, ClarificationCreateUnassigned,
+    /// MenuCreate).  These fall through to Stage::Creation which accepts them.
+    #[test]
+    fn given_task_interaction_prompt_when_clarification_callback_arrives_then_accepted() {
+        use crate::presentation::telegram::interactions::TaskInteractionKind;
+        let uid = Uuid::now_v7();
+        let screen = ScreenDescriptor::TaskInteractionPrompt {
+            task_uid: uid,
+            origin: TaskListOrigin::Assigned,
+            kind: TaskInteractionKind::Reassign,
+        };
+
+        assert!(
+            screen.accepts(&TelegramCallback::ClarificationPickEmployee { employee_id: 42 }),
+            "ClarificationPickEmployee must be accepted on TaskInteractionPrompt \
+             so reassign clarification buttons work"
+        );
+        assert!(
+            screen.accepts(&TelegramCallback::ClarificationCreateUnassigned),
+            "ClarificationCreateUnassigned must be accepted on TaskInteractionPrompt"
+        );
+        assert!(
+            screen.accepts(&TelegramCallback::MenuCreate),
+            "MenuCreate must be accepted on TaskInteractionPrompt \
+             (↩️ К меню создания in clarification keyboard)"
         );
     }
 
