@@ -315,9 +315,15 @@ pub struct SheetsSyncRow {
     pub telegram_username: Option<String>,
     pub created_at: DateTime<Utc>,
     pub error_count: u32,
+    /// Earliest UTC time at which this row may be retried.
+    ///
+    /// `None` means the row is immediately eligible (no prior failures).
+    /// Computed as `now + min(2^error_count minutes, 240 minutes)` by
+    /// `record_error` (see F-09 in the audit log).
+    pub next_attempt_at: Option<DateTime<Utc>>,
 }
 
-/// Read/write port for the `pending_sheet_writes` table (migration 016).
+/// Read/write port for the `pending_sheet_writes` table (migrations 016, 018).
 ///
 /// Rows are inserted when a user completes `/start` onboarding so their
 /// record is reflected back into the Google Sheets directory.  A background
@@ -335,15 +341,26 @@ pub trait SheetsSyncRepository: Send + Sync {
         telegram_username: Option<&str>,
     ) -> AppResult<()>;
 
-    /// Returns up to `limit` rows that have not yet been written and whose
-    /// `error_count < max_attempts`.
-    async fn list_pending(&self, max_attempts: u32, limit: i64) -> AppResult<Vec<SheetsSyncRow>>;
+    /// Returns up to `limit` rows that:
+    /// * have not yet been written (`written_at IS NULL`)
+    /// * whose `error_count < max_attempts`
+    /// * whose `next_attempt_at IS NULL OR next_attempt_at <= now`
+    ///
+    /// The `now` parameter is supplied by the caller (use `Utc::now()` in
+    /// production; inject a fixed time in tests).
+    async fn list_pending(
+        &self,
+        max_attempts: u32,
+        limit: i64,
+        now: DateTime<Utc>,
+    ) -> AppResult<Vec<SheetsSyncRow>>;
 
     /// Mark the row as successfully written to Sheets.
     async fn mark_written(&self, id: i64, now: DateTime<Utc>) -> AppResult<()>;
 
-    /// Increment `error_count` and store the latest error message.
-    async fn record_error(&self, id: i64, error: &str) -> AppResult<()>;
+    /// Increment `error_count`, store the latest error message, and set
+    /// `next_attempt_at` to `now + min(2^error_count minutes, 240 minutes)`.
+    async fn record_error(&self, id: i64, error: &str, now: DateTime<Utc>) -> AppResult<()>;
 }
 
 /// Identifies the kind of directory row that owns a set of person trigrams.
