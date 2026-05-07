@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::{Datelike, Utc, Weekday};
+use metrics::counter;
 use reqwest::Client;
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
@@ -19,6 +20,22 @@ use crate::infrastructure::http::retry::retry_with_backoff;
 use crate::shared::constants::timeouts::GEMINI_TIMEOUT_SECONDS;
 
 const GEMINI_API_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/models";
+
+/// Maximum UTF-8 byte length of the user-supplied `task_description` that is
+/// forwarded to Gemini as part of the prompt.
+///
+/// Voice transcriptions for typical 1–2 min recordings are well under 2 KiB.
+/// The 8 KiB cap prevents:
+/// * Runaway token costs from unusually verbose inputs.
+/// * Prompt-injection attempts embedded in oversized messages.
+///
+/// When the input exceeds this cap it is **truncated at a UTF-8 char
+/// boundary**, a warning is logged, and the `gemini_input_truncated_total`
+/// counter is incremented.  The truncated prompt is still forwarded to
+/// Gemini rather than rejected outright so legitimate (but verbose) tasks
+/// are not lost — the system prompt instructs the model to refuse or
+/// summarise gracefully if needed.
+pub const MAX_GEMINI_INPUT_LENGTH: usize = 8 * 1024; // 8 KiB
 
 /// System instruction sent with every Gemini request.
 ///
@@ -104,6 +121,29 @@ impl GeminiTaskGenerator {
         assignee: Option<&Employee>,
     ) -> AppResult<GeneratedTask> {
         self.circuit_breaker.ensure_closed("gemini").await?;
+
+        // ── F-06: defensive input cap ────────────────────────────────────
+        // Clone only when the description is oversized; the clone is cheap
+        // (it's just a String copy) and avoids mutating the caller's data.
+        let capped_request;
+        let parsed_request = if parsed_request.task_description.len() > MAX_GEMINI_INPUT_LENGTH {
+            let truncated =
+                truncate_to_char_boundary(&parsed_request.task_description, MAX_GEMINI_INPUT_LENGTH);
+            tracing::warn!(
+                target: "telegram_task_bot::ai",
+                original_bytes = parsed_request.task_description.len(),
+                cap_bytes = MAX_GEMINI_INPUT_LENGTH,
+                "gemini_input_truncated",
+            );
+            counter!("gemini_input_truncated_total").increment(1);
+            capped_request = ParsedTaskRequest {
+                task_description: truncated.to_owned(),
+                ..parsed_request.clone()
+            };
+            &capped_request
+        } else {
+            parsed_request
+        };
 
         let url = format!(
             "{}/{}:generateContent",
@@ -287,6 +327,20 @@ pub(crate) struct PromptContext<'a> {
     /// Multiline digest "Иван Иванов — @ivanov" truncated to a safe line
     /// budget.  Empty string is valid and means "no roster context".
     pub directory_digest: String,
+}
+
+/// Truncate `s` to at most `max_bytes` bytes, always at a valid UTF-8
+/// char boundary so the result is never garbled.
+fn truncate_to_char_boundary(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    // Walk backward from max_bytes until we hit a char boundary.
+    let mut boundary = max_bytes;
+    while boundary > 0 && !s.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    &s[..boundary]
 }
 
 fn weekday_ru(weekday: Weekday) -> &'static str {

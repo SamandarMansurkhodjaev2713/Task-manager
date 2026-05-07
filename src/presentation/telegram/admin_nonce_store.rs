@@ -21,8 +21,26 @@
 //! The audit *outcome* of every admin action is persisted via the admin
 //! audit log, so a restart losing pending nonces only costs the user a
 //! re-click.  In-memory storage avoids an extra SQL round-trip and keeps
-//! the code simple; a Redis-backed implementation can be swapped in
-//! behind [`AdminNonceStore`] without touching callers.
+//! the code simple.
+//!
+//! # ⚠ Intentional limitation — single-instance only
+//!
+//! This implementation is a **known skeleton** that works correctly for the
+//! current single-process deployment (one Docker container, one Telegram
+//! polling loop).  It is *intentionally* not multi-instance safe:
+//!
+//! * Nonces live only in the heap of the issuing process.
+//! * If the service restarts or a second replica is added, nonces from the
+//!   first process are invisible to the second and will never be consumed.
+//!
+//! **Accepted risk**: a process restart invalidates any pending confirmation.
+//! The admin sees "nonce not found" and must re-issue the action — a minor
+//! UX inconvenience, not a security issue, because nonces expire in minutes.
+//!
+//! **Migration path for multi-instance**: store nonces in an `admin_action_nonces`
+//! SQLite table (or Redis) and replace [`AdminNonceStore`]'s inner store with a
+//! `dyn AdminNonceRepository` trait — no callers need to change.  Track this as
+//! technical debt item `F-03` in the audit log.
 
 use std::collections::HashMap;
 use std::num::NonZeroU32;
