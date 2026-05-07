@@ -246,14 +246,35 @@ mod tests {
         assert_eq!(result, Err(NonceError::NotFound));
     }
 
+    /// Verify that a nonce whose `expires_at` is in the past is rejected.
+    ///
+    /// We directly backdate the entry instead of sleeping so the test is
+    /// deterministic under any CPU load and completes instantly.
     #[test]
     fn given_nonce_when_ttl_elapses_then_it_is_expired() {
-        let store = AdminNonceStore::new(NonZeroU32::new(1).unwrap());
+        let store = AdminNonceStore::new(NonZeroU32::new(60).unwrap());
         let nonce = store.issue(42, sample_action());
-        std::thread::sleep(Duration::from_millis(1_100));
+
+        // Backdate the entry so it is already expired from sweep_expired's
+        // perspective.  `Instant::now()` is monotonic; subtracting more than
+        // the system uptime would panic, so we use checked_duration_since and
+        // fall back to a tiny delta when the system has just booted.
+        {
+            let past = Instant::now()
+                .checked_sub(Duration::from_secs(120))
+                .unwrap_or_else(|| Instant::now().checked_sub(Duration::from_millis(1)).unwrap());
+            let mut guard = store.inner.lock().unwrap();
+            if let Some(entry) = guard.get_mut(&nonce) {
+                entry.expires_at = past;
+            }
+        }
 
         let result = store.consume(42, &nonce);
 
-        assert_eq!(result, Err(NonceError::NotFound));
+        assert_eq!(
+            result,
+            Err(NonceError::NotFound),
+            "backdated nonce must be swept as expired"
+        );
     }
 }
