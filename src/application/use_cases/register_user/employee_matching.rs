@@ -29,13 +29,15 @@ pub(super) enum RegistrationEmployeeMatch {
     NotFound,
 }
 
-/// Attempts to match `message.sender_username` / `sender_name` against
-/// the active employee roster and returns the strictest matching outcome.
+/// Attempts to match `message.sender_username` / the best known full name
+/// against the active employee roster and returns the strictest matching
+/// outcome.
 ///
 /// Username matches (exact, case-insensitive) are tried first; full-name
 /// matches (exact, normalised) are the fallback.
 pub(super) fn resolve_registration_match(
     message: &IncomingMessage,
+    full_name_override: Option<&str>,
     employees: &[Employee],
 ) -> RegistrationEmployeeMatch {
     let username_matches = exact_username_matches(message, employees);
@@ -51,7 +53,12 @@ pub(super) fn resolve_registration_match(
         );
     }
 
-    let full_name_matches = exact_full_name_matches(message, employees);
+    let full_name_matches = exact_full_name_matches(
+        full_name_override
+            .filter(|value| !normalize_person_name(value).is_empty())
+            .unwrap_or(&message.sender_name),
+        employees,
+    );
     if full_name_matches.len() == 1 {
         return RegistrationEmployeeMatch::Unique(full_name_matches.into_iter().next().unwrap());
     }
@@ -100,8 +107,8 @@ fn exact_username_matches(message: &IncomingMessage, employees: &[Employee]) -> 
         .collect()
 }
 
-fn exact_full_name_matches(message: &IncomingMessage, employees: &[Employee]) -> Vec<Employee> {
-    let normalized_name = normalize_person_name(&message.sender_name);
+fn exact_full_name_matches(full_name: &str, employees: &[Employee]) -> Vec<Employee> {
+    let normalized_name = normalize_person_name(full_name);
     if normalized_name.is_empty() {
         return Vec::new();
     }
@@ -145,7 +152,7 @@ mod tests {
         let employee = make_employee("Jean Dupont", None);
         let message = make_message("Jean Dupont", None);
 
-        let resolved = resolve_registration_match(&message, std::slice::from_ref(&employee));
+        let resolved = resolve_registration_match(&message, None, std::slice::from_ref(&employee));
 
         assert!(
             matches!(resolved, RegistrationEmployeeMatch::Unique(found) if found.full_name == employee.full_name)
@@ -158,7 +165,7 @@ mod tests {
         let second = make_employee("Jean Dupont", Some("@other"));
         let message = make_message("Jean Dupont", None);
 
-        let resolved = resolve_registration_match(&message, &[first, second]);
+        let resolved = resolve_registration_match(&message, None, &[first, second]);
 
         assert!(matches!(resolved, RegistrationEmployeeMatch::Ambiguous(_)));
     }
@@ -168,7 +175,7 @@ mod tests {
         let employee = make_employee("Jean Dupont", Some("@jean"));
         let message = make_message("Somebody Else", Some("@jean"));
 
-        let resolved = resolve_registration_match(&message, std::slice::from_ref(&employee));
+        let resolved = resolve_registration_match(&message, None, std::slice::from_ref(&employee));
 
         assert!(
             matches!(resolved, RegistrationEmployeeMatch::Unique(found) if found.full_name == employee.full_name)
@@ -178,6 +185,22 @@ mod tests {
     #[test]
     fn given_name_with_extra_spaces_when_normalizing_then_preserves_single_spaces() {
         assert_eq!(normalize_person_name("  Jean   Dupont  "), "jean dupont");
+    }
+
+    #[test]
+    fn given_stored_onboarding_name_when_sender_display_is_short_then_uses_override() {
+        let employee = make_employee("Jean Dupont", Some("@directory_username"));
+        let message = make_message("J", Some("@actual_username"));
+
+        let resolved = resolve_registration_match(
+            &message,
+            Some("Jean Dupont"),
+            std::slice::from_ref(&employee),
+        );
+
+        assert!(
+            matches!(resolved, RegistrationEmployeeMatch::Unique(found) if found.full_name == employee.full_name)
+        );
     }
 
     fn make_employee(full_name: &str, username: Option<&str>) -> Employee {

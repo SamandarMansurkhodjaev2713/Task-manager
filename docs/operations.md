@@ -41,6 +41,7 @@ Before deploy:
 After deploy:
 - open `/healthz`
 - open `/metrics`
+- open `/version` and verify `git_sha`
 - create one quick task
 - create one guided task
 - send one voice task and verify confirmation appears before creation
@@ -102,6 +103,10 @@ Semantics:
   build-time environment variable.  If not injected at build time the
   field is reported as `"unknown"` — deploys should set it via Docker
   `--build-arg GIT_SHA=$(git rev-parse HEAD)`.
+
+Local Windows caveat: if `127.0.0.1:8080` returns an unexpected service
+response, check for another listener on that address. The Docker service
+can still be healthy on `localhost:8080`.
 
 ## Log inventory
 

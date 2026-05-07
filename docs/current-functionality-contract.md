@@ -3,7 +3,7 @@
 **Purpose:** Ground truth of what the bot actually does today. This file must not drift
 from the codebase. When a feature ships or is removed, update this file in the same PR.
 
-**Last verified:** 2026-04-24 against `main` branch.
+**Last verified:** 2026-05-06 against local Docker/Linux test gate.
 
 ---
 
@@ -28,6 +28,8 @@ from the codebase. When a feature ships or is removed, update this file in the s
 | `/find` | optional query | User | **Skeleton only — returns placeholder response. No real search.** |
 
 ---
+
+2026-05-06 correction: `/find` now searches the caller's visible tasks and returns a bounded matching list; it is no longer a placeholder-only command.
 
 ## Task statuses and transitions
 
@@ -149,6 +151,8 @@ Concurrent processing: 10 in-flight.
 ---
 
 ## Features that exist only as backend skeleton (no UI)
+
+2026-05-06 correction: `/find` should no longer be treated as a backend-only skeleton; it has live search behavior.
 
 | Feature | What exists | What is missing |
 |---------|------------|-----------------|

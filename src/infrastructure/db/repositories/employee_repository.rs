@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use sqlx::SqlitePool;
+use std::collections::{HashMap, HashSet};
 
 use crate::application::ports::repositories::EmployeeRepository;
 use crate::domain::employee::{Employee, WorkloadSnapshot};
@@ -34,40 +35,97 @@ impl EmployeeRepository for SqliteEmployeeRepository {
     ///   `full_name` and no username, or insert a fresh row.
     async fn upsert_many(&self, employees: &[Employee]) -> AppResult<usize> {
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
+        let duplicate_full_names = duplicate_full_names_in_batch(employees);
 
         for employee in employees {
             if employee.telegram_username.is_some() {
-                // Has a Telegram username → use the partial unique index.
-                // `source` is forced to 'google_sheets' to upgrade any
-                // `bot_registered` row that was created before this sync ran.
-                sqlx::query(
-                    "INSERT INTO employees
-                         (full_name, telegram_username, email, phone, department,
-                          is_active, source, synced_at, created_at, updated_at)
-                     VALUES (?, ?, ?, ?, ?, ?, 'google_sheets', ?, ?, ?)
-                     ON CONFLICT(telegram_username) WHERE telegram_username IS NOT NULL
-                     DO UPDATE SET
-                         full_name        = excluded.full_name,
-                         email            = excluded.email,
-                         phone            = excluded.phone,
-                         department       = excluded.department,
-                         is_active        = excluded.is_active,
-                         source           = 'google_sheets',
-                         synced_at        = excluded.synced_at,
-                         updated_at       = excluded.updated_at",
+                let existing_username_id = sqlx::query_scalar::<_, i64>(
+                    "SELECT id FROM employees
+                     WHERE lower(telegram_username) = lower(?)
+                       AND telegram_username IS NOT NULL
+                     LIMIT 1",
                 )
-                .bind(&employee.full_name)
                 .bind(employee.telegram_username.as_deref())
-                .bind(employee.email.as_deref())
-                .bind(employee.phone.as_deref())
-                .bind(employee.department.as_deref())
-                .bind(bool_as_i64(employee.is_active))
-                .bind(employee.synced_at)
-                .bind(employee.created_at)
-                .bind(employee.updated_at)
-                .execute(&mut *transaction)
+                .fetch_optional(&mut *transaction)
                 .await
                 .map_err(database_error)?;
+
+                let employee_id_to_update = match existing_username_id {
+                    Some(id) => Some(id),
+                    None if !duplicate_full_names.contains(&employee.full_name) => {
+                        let same_name_ids = sqlx::query_scalar::<_, i64>(
+                            "SELECT id FROM employees
+                             WHERE full_name = ?
+                             ORDER BY id ASC
+                             LIMIT 2",
+                        )
+                        .bind(&employee.full_name)
+                        .fetch_all(&mut *transaction)
+                        .await
+                        .map_err(database_error)?;
+
+                        if same_name_ids.len() == 1 {
+                            same_name_ids.first().copied()
+                        } else {
+                            None
+                        }
+                    }
+                    None => None,
+                };
+
+                let target_id = if let Some(id) = employee_id_to_update {
+                    sqlx::query(
+                        "UPDATE employees SET
+                             full_name         = ?,
+                             telegram_username = ?,
+                             email             = ?,
+                             phone             = ?,
+                             department        = ?,
+                             is_active         = ?,
+                             source            = 'google_sheets',
+                             synced_at         = ?,
+                             updated_at        = ?
+                         WHERE id = ?",
+                    )
+                    .bind(&employee.full_name)
+                    .bind(employee.telegram_username.as_deref())
+                    .bind(employee.email.as_deref())
+                    .bind(employee.phone.as_deref())
+                    .bind(employee.department.as_deref())
+                    .bind(bool_as_i64(employee.is_active))
+                    .bind(employee.synced_at)
+                    .bind(employee.updated_at)
+                    .bind(id)
+                    .execute(&mut *transaction)
+                    .await
+                    .map_err(database_error)?;
+                    id
+                } else {
+                    let result = sqlx::query(
+                        "INSERT INTO employees
+                             (full_name, telegram_username, email, phone, department,
+                              is_active, source, synced_at, created_at, updated_at)
+                         VALUES (?, ?, ?, ?, ?, ?, 'google_sheets', ?, ?, ?)",
+                    )
+                    .bind(&employee.full_name)
+                    .bind(employee.telegram_username.as_deref())
+                    .bind(employee.email.as_deref())
+                    .bind(employee.phone.as_deref())
+                    .bind(employee.department.as_deref())
+                    .bind(bool_as_i64(employee.is_active))
+                    .bind(employee.synced_at)
+                    .bind(employee.created_at)
+                    .bind(employee.updated_at)
+                    .execute(&mut *transaction)
+                    .await
+                    .map_err(database_error)?;
+                    result.last_insert_rowid()
+                };
+
+                if !duplicate_full_names.contains(&employee.full_name) {
+                    merge_stale_same_name_rows(&mut transaction, target_id, &employee.full_name)
+                        .await?;
+                }
             } else {
                 // No Telegram username — find an existing nameless row with the
                 // same full_name and update it, or insert a fresh row.
@@ -121,6 +179,34 @@ impl EmployeeRepository for SqliteEmployeeRepository {
                     .execute(&mut *transaction)
                     .await
                     .map_err(database_error)?;
+                }
+            }
+        }
+
+        for (full_name, username) in
+            authoritative_usernames_by_unique_full_name(employees, &duplicate_full_names)
+        {
+            let target_id = sqlx::query_scalar::<_, i64>(
+                "SELECT id FROM employees
+                 WHERE lower(telegram_username) = lower(?)
+                   AND telegram_username IS NOT NULL
+                 LIMIT 1",
+            )
+            .bind(username.as_str())
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(database_error)?;
+
+            if let Some(target_id) = target_id {
+                let merged =
+                    merge_stale_same_name_rows(&mut transaction, target_id, &full_name).await?;
+                if merged > 0 {
+                    tracing::warn!(
+                        target_id,
+                        full_name,
+                        merged,
+                        "merged stale duplicate employee rows during directory sync"
+                    );
                 }
             }
         }
@@ -273,6 +359,92 @@ impl EmployeeRepository for SqliteEmployeeRepository {
             overdue_task_count: row.1.max(0) as u32,
         })
     }
+}
+
+fn duplicate_full_names_in_batch(employees: &[Employee]) -> HashSet<String> {
+    let mut counts = HashMap::<String, usize>::new();
+    for employee in employees {
+        *counts.entry(employee.full_name.clone()).or_default() += 1;
+    }
+    counts
+        .into_iter()
+        .filter_map(|(full_name, count)| (count > 1).then_some(full_name))
+        .collect()
+}
+
+fn authoritative_usernames_by_unique_full_name(
+    employees: &[Employee],
+    duplicate_full_names: &HashSet<String>,
+) -> Vec<(String, String)> {
+    employees
+        .iter()
+        .filter(|employee| !duplicate_full_names.contains(&employee.full_name))
+        .filter_map(|employee| {
+            employee
+                .telegram_username
+                .as_ref()
+                .map(|username| (employee.full_name.clone(), username.clone()))
+        })
+        .collect()
+}
+
+async fn merge_stale_same_name_rows(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    target_id: i64,
+    full_name: &str,
+) -> AppResult<u64> {
+    sqlx::query(
+        "UPDATE tasks
+         SET assigned_to_employee_id = ?
+         WHERE assigned_to_employee_id IN (
+             SELECT id FROM employees WHERE full_name = ? AND id <> ?
+         )",
+    )
+    .bind(target_id)
+    .bind(full_name)
+    .bind(target_id)
+    .execute(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+
+    sqlx::query(
+        "UPDATE users
+         SET linked_employee_id = ?
+         WHERE linked_employee_id IN (
+             SELECT id FROM employees WHERE full_name = ? AND id <> ?
+         )",
+    )
+    .bind(target_id)
+    .bind(full_name)
+    .bind(target_id)
+    .execute(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+
+    sqlx::query(
+        "DELETE FROM person_trigrams
+         WHERE owner_kind = 'employee'
+           AND owner_id IN (
+               SELECT id FROM employees WHERE full_name = ? AND id <> ?
+           )",
+    )
+    .bind(full_name)
+    .bind(target_id)
+    .execute(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+
+    let result = sqlx::query(
+        "DELETE FROM employees
+         WHERE full_name = ? AND id <> ?",
+    )
+    .bind(full_name)
+    .bind(target_id)
+    .execute(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+
+    Ok(result.rows_affected())
 }
 
 // ─── Unit tests ───────────────────────────────────────────────────────────────

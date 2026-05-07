@@ -498,7 +498,6 @@ mod tests {
     /// be accepted only when they target the same task_uid.
     #[test]
     fn given_task_interaction_prompt_when_callback_targets_same_task_then_accepted() {
-        use crate::presentation::telegram::callbacks::TaskCardMode;
         use crate::presentation::telegram::interactions::TaskInteractionKind;
         let uid = Uuid::now_v7();
         let other_uid = Uuid::now_v7();

@@ -51,12 +51,17 @@ pub async fn run_backup_cycle(pool: &SqlitePool, backup_dir: &str, max_files: u3
 
     // Execute VACUUM INTO — this is the actual backup step.
     let path_str = backup_path.to_string_lossy().to_string();
-    let result =
-        sqlx::query("VACUUM INTO ?").bind(&path_str).execute(pool).await;
+    let result = sqlx::query("VACUUM INTO ?")
+        .bind(&path_str)
+        .execute(pool)
+        .await;
 
     match result {
         Ok(_) => {
-            tracing::info!(path = path_str, "sqlite_backup: backup written successfully");
+            tracing::info!(
+                path = path_str,
+                "sqlite_backup: backup written successfully"
+            );
         }
         Err(err) => {
             tracing::error!(
@@ -186,7 +191,11 @@ mod tests {
         rotate_backups(dir.path().to_str().unwrap(), 3);
 
         let remaining = list_backup_files(&dir);
-        assert_eq!(remaining.len(), 3, "expected exactly 3 files, got {remaining:?}");
+        assert_eq!(
+            remaining.len(),
+            3,
+            "expected exactly 3 files, got {remaining:?}"
+        );
         assert!(
             !remaining.contains(&"app-2026-05-01-06.db".to_owned()),
             "oldest file must be deleted"
@@ -219,7 +228,11 @@ mod tests {
         rotate_backups(dir.path().to_str().unwrap(), 2);
 
         let remaining = list_backup_files(&dir);
-        assert_eq!(remaining.len(), 2, "auto-backup files remaining: {remaining:?}");
+        assert_eq!(
+            remaining.len(),
+            2,
+            "auto-backup files remaining: {remaining:?}"
+        );
         // Manual file is not in the auto-rotation list
         assert!(
             dir.path().join("manual-backup.db").exists(),

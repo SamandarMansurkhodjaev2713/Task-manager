@@ -19,7 +19,14 @@
       "Bash(cargo build *)",
       "Bash(xargs grep *)",
       "Bash(git add *)",
-      "Bash(git commit -m ' *)"
+      "Bash(git commit -m ' *)",
+      "Bash(docker compose *)",
+      "Bash(grep -E \"test result|FAILED|error\\\\[|ok$|running [0-9]\")",
+      "Bash(echo \"EXIT:$?\")",
+      "Bash(grep -v \"//\")",
+      "Read(//c/Windows/Temp/**)",
+      "Bash(grep -v \"-- \")",
+      "PowerShell($env:GIT_SHA = \\(git rev-parse HEAD\\); docker compose build --no-cache 2>&1)"
     ]
   }
 }

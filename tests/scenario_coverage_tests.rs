@@ -259,18 +259,21 @@ fn p2_s04_cancelled_task_cannot_be_cancelled_again() {
         .transition_to(TaskStatus::Cancelled, Utc::now())
         .expect("created -> cancelled");
     let err = cancelled.transition_to(TaskStatus::Cancelled, Utc::now());
-    assert!(
-        err.is_err(),
-        "cancelled task must not be cancellable again"
-    );
+    assert!(err.is_err(), "cancelled task must not be cancellable again");
 }
 
 #[test]
 fn p2_s05_task_detail_compact_text_renders_without_panic() {
     let details = make_task_status_details(TaskStatus::InProgress);
     let text = task_detail_text(&details, TaskCardMode::Compact, None);
-    assert!(text.contains("T-0001"), "compact text must include task code");
-    assert!(text.contains("Написать тест"), "compact text must include title");
+    assert!(
+        text.contains("T-0001"),
+        "compact text must include task code"
+    );
+    assert!(
+        text.contains("Написать тест"),
+        "compact text must include title"
+    );
     assert!(!text.is_empty());
 }
 
@@ -332,14 +335,18 @@ fn p2_s10_add_comment_keyboard_button_uses_verb_not_noun() {
     // includes AddComment and inspect its button labels.
     let mut details = make_task_status_details(TaskStatus::InProgress);
     details.available_actions = vec![TaskActionView::AddComment];
-    let keyboard = ui::task_detail_keyboard(&details, TaskListOrigin::Assigned, TaskCardMode::Compact);
+    let keyboard =
+        ui::task_detail_keyboard(&details, TaskListOrigin::Assigned, TaskCardMode::Compact);
     let all_labels: Vec<_> = keyboard
         .inline_keyboard
         .iter()
         .flat_map(|row| row.iter().map(|btn| btn.text.as_str()))
         .collect();
     assert!(
-        all_labels.iter().any(|l| l.to_lowercase().contains("добавить") || l.to_lowercase().contains("комментарий")),
+        all_labels
+            .iter()
+            .any(|l| l.to_lowercase().contains("добавить")
+                || l.to_lowercase().contains("комментарий")),
         "AddComment button must be labelled with an imperative verb phrase; got: {all_labels:?}"
     );
     // Specifically must NOT be just the noun "Комментарий" without a verb
@@ -374,7 +381,10 @@ fn p3_s01_manager_role_sees_manager_help_section_but_not_admin() {
 fn p3_s02_manager_inbox_list_header_is_non_empty() {
     let (title, subtitle) = list_header(TaskListOrigin::ManagerInbox);
     assert!(!title.is_empty(), "manager inbox title must not be empty");
-    assert!(!subtitle.is_empty(), "manager inbox subtitle must not be empty");
+    assert!(
+        !subtitle.is_empty(),
+        "manager inbox subtitle must not be empty"
+    );
 }
 
 #[test]
@@ -404,7 +414,10 @@ fn p3_s05_task_creation_text_created_variant_has_task_code_and_success_indicator
     let summary = make_creation_summary();
     let outcome = TaskCreationOutcome::Created(summary);
     let text = task_creation_text(&outcome);
-    assert!(text.contains("✅"), "created outcome must have success indicator");
+    assert!(
+        text.contains("✅"),
+        "created outcome must have success indicator"
+    );
     assert!(!text.is_empty());
 }
 
@@ -446,7 +459,10 @@ fn p3_s07_task_creation_clarification_required_shows_candidate_names() {
 fn p3_s08_cancel_confirmation_text_shows_task_code_and_title() {
     let details = make_task_status_details(TaskStatus::InProgress);
     let text = cancel_confirmation_text(&details);
-    assert!(text.contains("T-0001"), "cancel confirmation must show task code");
+    assert!(
+        text.contains("T-0001"),
+        "cancel confirmation must show task code"
+    );
     assert!(
         text.contains("Написать тест"),
         "cancel confirmation must show title"
@@ -458,7 +474,10 @@ fn p3_s09_task_comment_prompt_mentions_task_code() {
     let details = make_task_status_details(TaskStatus::InProgress);
     let text = task_comment_prompt(&details);
     assert!(!text.is_empty(), "comment prompt must not be empty");
-    assert!(text.contains("T-0001"), "comment prompt must mention task code");
+    assert!(
+        text.contains("T-0001"),
+        "comment prompt must mention task code"
+    );
 }
 
 #[test]
@@ -466,7 +485,10 @@ fn p3_s10_task_reassign_prompt_mentions_task_code() {
     let details = make_task_status_details(TaskStatus::InProgress);
     let text = task_reassign_prompt(&details);
     assert!(!text.is_empty(), "reassign prompt must not be empty");
-    assert!(text.contains("T-0001"), "reassign prompt must mention task code");
+    assert!(
+        text.contains("T-0001"),
+        "reassign prompt must mention task code"
+    );
 }
 
 // ─── P4: Администратор ────────────────────────────────────────────────────────
@@ -610,10 +632,7 @@ fn p4_s07_admin_back_keyboard_has_both_navigation_buttons() {
 #[test]
 fn p4_s08_admin_features_keyboard_shows_enabled_flag_with_toggle_indicator() {
     use telegram_task_bot::shared::feature_flags::FeatureFlag;
-    let flags = vec![
-        (FeatureFlag::VoiceV2, true),
-        (FeatureFlag::VoiceV2, false),
-    ];
+    let flags = vec![(FeatureFlag::VoiceV2, true), (FeatureFlag::VoiceV2, false)];
     let keyboard = ui::admin_features_keyboard(&flags);
     let all_labels: Vec<_> = keyboard
         .inline_keyboard
@@ -622,12 +641,16 @@ fn p4_s08_admin_features_keyboard_shows_enabled_flag_with_toggle_indicator() {
         .collect();
     // Enabled flag: ✅ … (откл.)
     assert!(
-        all_labels.iter().any(|l| l.contains("✅") && l.contains("откл")),
+        all_labels
+            .iter()
+            .any(|l| l.contains("✅") && l.contains("откл")),
         "enabled flag must show ✅ with '(откл.)' to indicate what clicking will do"
     );
     // Disabled flag: ⬜ … (вкл.)
     assert!(
-        all_labels.iter().any(|l| l.contains("⬜") && l.contains("вкл")),
+        all_labels
+            .iter()
+            .any(|l| l.contains("⬜") && l.contains("вкл")),
         "disabled flag must show ⬜ with '(вкл.)'"
     );
 }
@@ -644,7 +667,10 @@ fn p4_s09_help_section_codec_roundtrip_for_all_five_sections() {
         let cb = TelegramCallback::MenuHelpSection { section };
         let encoded = encode_callback(&cb);
         let decoded = parse_callback(&encoded).expect("must decode");
-        assert_eq!(decoded, cb, "HelpSection::{section:?} must roundtrip cleanly");
+        assert_eq!(
+            decoded, cb,
+            "HelpSection::{section:?} must roundtrip cleanly"
+        );
     }
 }
 
@@ -675,12 +701,19 @@ fn p5_s01_cancel_action_appears_in_its_own_last_row_in_task_detail_keyboard() {
         .inline_keyboard
         .iter()
         .position(|row| row.iter().any(|btn| btn.text.contains("Отменить")));
-    let comment_row = keyboard
-        .inline_keyboard
-        .iter()
-        .position(|row| row.iter().any(|btn| btn.text.contains("Добавить комментарий") || btn.text.contains("комментарий")));
-    assert!(cancel_row.is_some(), "Cancel button must appear in the keyboard");
-    assert!(comment_row.is_some(), "Comment button must appear in the keyboard");
+    let comment_row = keyboard.inline_keyboard.iter().position(|row| {
+        row.iter().any(|btn| {
+            btn.text.contains("Добавить комментарий") || btn.text.contains("комментарий")
+        })
+    });
+    assert!(
+        cancel_row.is_some(),
+        "Cancel button must appear in the keyboard"
+    );
+    assert!(
+        comment_row.is_some(),
+        "Comment button must appear in the keyboard"
+    );
     // Cancel must come AFTER the constructive actions
     assert!(
         cancel_row.unwrap() > comment_row.unwrap(),
@@ -737,7 +770,10 @@ fn p5_s05_voice_confirmation_keyboard_has_confirm_edit_and_cancel() {
         .iter()
         .flat_map(|row| row.iter().map(|btn| btn.text.as_str()))
         .collect();
-    assert!(all_labels.contains(&"✅ Создать задачу"), "must have confirm");
+    assert!(
+        all_labels.contains(&"✅ Создать задачу"),
+        "must have confirm"
+    );
     assert!(all_labels.contains(&"✏️ Исправить текст"), "must have edit");
     assert!(all_labels.contains(&"❌ Отменить"), "must have cancel");
 }
@@ -752,7 +788,9 @@ fn p5_s06_guided_confirmation_keyboard_edit_buttons_are_imperative() {
         .flat_map(|row| row.iter().map(|btn| btn.text.as_str()))
         .collect();
     assert!(
-        all_labels.iter().any(|l| l.contains("Изменить исполнителя")),
+        all_labels
+            .iter()
+            .any(|l| l.contains("Изменить исполнителя")),
         "guided confirmation must say 'Изменить исполнителя'; got: {all_labels:?}"
     );
     assert!(

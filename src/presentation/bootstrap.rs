@@ -328,6 +328,20 @@ pub async fn run_application(config: AppConfig) -> AppResult<()> {
             "initial employee sync failed; background scheduler will retry"
         ),
     }
+    match register_user_use_case
+        .reconcile_existing_directory_links()
+        .await
+    {
+        Ok(count) if count > 0 => tracing::info!(
+            count,
+            "existing registered users linked after employee directory sync"
+        ),
+        Ok(_) => {}
+        Err(error) => tracing::warn!(
+            code = error.code(),
+            "existing user link reconciliation failed after employee directory sync"
+        ),
+    }
 
     // Phase 2: seed Russian diminutive aliases (idempotent). Runs best-effort:
     // failure logs a warning but does not abort startup.
@@ -377,6 +391,7 @@ pub async fn run_application(config: AppConfig) -> AppResult<()> {
         config.scheduler.clone(),
         BackgroundJobUseCases {
             sync_employees: sync_employees_use_case.clone(),
+            register_user: register_user_use_case.clone(),
             process_notifications: process_notifications_use_case.clone(),
             enqueue_task_reminders: enqueue_task_reminders_use_case,
             enqueue_daily_summaries: enqueue_daily_summaries_use_case,

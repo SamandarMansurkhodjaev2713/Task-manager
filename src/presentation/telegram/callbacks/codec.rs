@@ -14,9 +14,10 @@ const CALLBACK_GROUP_DRAFT: &str = "d";
 const CALLBACK_GROUP_INPUT: &str = "i";
 const CALLBACK_GROUP_ADMIN: &str = "a";
 const EMPTY_CURSOR: &str = "_";
+const TELEGRAM_CALLBACK_DATA_MAX_BYTES: usize = 64;
 
 pub fn encode_callback(callback: &TelegramCallback) -> String {
-    match callback {
+    let encoded = match callback {
         TelegramCallback::MenuHome => format!("{CALLBACK_GROUP_MENU}:home"),
         TelegramCallback::MenuHelp => format!("{CALLBACK_GROUP_MENU}:help"),
         TelegramCallback::MenuHelpSection { section } => {
@@ -37,7 +38,7 @@ pub fn encode_callback(callback: &TelegramCallback) -> String {
             origin,
             mode,
         } => format!(
-            "{CALLBACK_GROUP_TASK}:open:{}:{}:{}",
+            "{CALLBACK_GROUP_TASK}:o:{}:{}:{}",
             origin_code(*origin),
             task_uid,
             task_card_mode_code(*mode)
@@ -47,38 +48,38 @@ pub fn encode_callback(callback: &TelegramCallback) -> String {
             next_status,
             origin,
         } => format!(
-            "{CALLBACK_GROUP_TASK}:status:{}:{}:{}",
+            "{CALLBACK_GROUP_TASK}:s:{}:{}:{}",
             origin_code(*origin),
             task_uid,
             task_status_code(*next_status)
         ),
         TelegramCallback::ConfirmTaskCancel { task_uid, origin } => format!(
-            "{CALLBACK_GROUP_TASK}:cancel_confirm:{}:{}",
+            "{CALLBACK_GROUP_TASK}:cc:{}:{}",
             origin_code(*origin),
             task_uid
         ),
         TelegramCallback::ExecuteTaskCancel { task_uid, origin } => format!(
-            "{CALLBACK_GROUP_TASK}:cancel_execute:{}:{}",
+            "{CALLBACK_GROUP_TASK}:cx:{}:{}",
             origin_code(*origin),
             task_uid
         ),
         TelegramCallback::StartTaskCommentInput { task_uid, origin } => format!(
-            "{CALLBACK_GROUP_INPUT}:comment:{}:{}",
+            "{CALLBACK_GROUP_INPUT}:cm:{}:{}",
             origin_code(*origin),
             task_uid
         ),
         TelegramCallback::StartTaskBlockerInput { task_uid, origin } => format!(
-            "{CALLBACK_GROUP_INPUT}:blocker:{}:{}",
+            "{CALLBACK_GROUP_INPUT}:b:{}:{}",
             origin_code(*origin),
             task_uid
         ),
         TelegramCallback::StartTaskReassignInput { task_uid, origin } => format!(
-            "{CALLBACK_GROUP_INPUT}:reassign:{}:{}",
+            "{CALLBACK_GROUP_INPUT}:r:{}:{}",
             origin_code(*origin),
             task_uid
         ),
         TelegramCallback::ShowDeliveryHelp { task_uid, origin } => format!(
-            "{CALLBACK_GROUP_INPUT}:delivery_help:{}:{}",
+            "{CALLBACK_GROUP_INPUT}:dh:{}:{}",
             origin_code(*origin),
             task_uid
         ),
@@ -134,7 +135,12 @@ pub fn encode_callback(callback: &TelegramCallback) -> String {
         TelegramCallback::AdminToggleFeature { flag_key } => {
             format!("{CALLBACK_GROUP_ADMIN}:ftog:{flag_key}")
         }
-    }
+    };
+    debug_assert!(
+        encoded.len() <= TELEGRAM_CALLBACK_DATA_MAX_BYTES,
+        "Telegram callback_data exceeds {TELEGRAM_CALLBACK_DATA_MAX_BYTES} bytes: {encoded}"
+    );
+    encoded
 }
 
 pub fn parse_callback(value: &str) -> Option<TelegramCallback> {
@@ -158,54 +164,76 @@ fn parse_callback_modern(value: &str) -> Option<TelegramCallback> {
             origin: parse_origin_code(scope)?,
             cursor: parse_cursor(cursor),
         }),
-        [CALLBACK_GROUP_TASK, "open", origin, task_uid] => Some(TelegramCallback::OpenTask {
-            origin: parse_origin_code(origin)?,
-            task_uid: Uuid::parse_str(task_uid).ok()?,
-            mode: TaskCardMode::Compact,
-        }),
-        [CALLBACK_GROUP_TASK, "open", origin, task_uid, mode] => Some(TelegramCallback::OpenTask {
-            origin: parse_origin_code(origin)?,
-            task_uid: Uuid::parse_str(task_uid).ok()?,
-            mode: parse_task_card_mode(mode)?,
-        }),
-        [CALLBACK_GROUP_TASK, "status", origin, task_uid, status] => {
+        [CALLBACK_GROUP_TASK, action, origin, task_uid]
+            if is_callback_code(action, "o", "open") =>
+        {
+            Some(TelegramCallback::OpenTask {
+                origin: parse_origin_code(origin)?,
+                task_uid: Uuid::parse_str(task_uid).ok()?,
+                mode: TaskCardMode::Compact,
+            })
+        }
+        [CALLBACK_GROUP_TASK, action, origin, task_uid, mode]
+            if is_callback_code(action, "o", "open") =>
+        {
+            Some(TelegramCallback::OpenTask {
+                origin: parse_origin_code(origin)?,
+                task_uid: Uuid::parse_str(task_uid).ok()?,
+                mode: parse_task_card_mode(mode)?,
+            })
+        }
+        [CALLBACK_GROUP_TASK, action, origin, task_uid, status]
+            if is_callback_code(action, "s", "status") =>
+        {
             Some(TelegramCallback::UpdateTaskStatus {
                 origin: parse_origin_code(origin)?,
                 task_uid: Uuid::parse_str(task_uid).ok()?,
                 next_status: parse_task_status(status)?,
             })
         }
-        [CALLBACK_GROUP_TASK, "cancel_confirm", origin, task_uid] => {
+        [CALLBACK_GROUP_TASK, action, origin, task_uid]
+            if is_callback_code(action, "cc", "cancel_confirm") =>
+        {
             Some(TelegramCallback::ConfirmTaskCancel {
                 origin: parse_origin_code(origin)?,
                 task_uid: Uuid::parse_str(task_uid).ok()?,
             })
         }
-        [CALLBACK_GROUP_TASK, "cancel_execute", origin, task_uid] => {
+        [CALLBACK_GROUP_TASK, action, origin, task_uid]
+            if is_callback_code(action, "cx", "cancel_execute") =>
+        {
             Some(TelegramCallback::ExecuteTaskCancel {
                 origin: parse_origin_code(origin)?,
                 task_uid: Uuid::parse_str(task_uid).ok()?,
             })
         }
-        [CALLBACK_GROUP_INPUT, "comment", origin, task_uid] => {
+        [CALLBACK_GROUP_INPUT, action, origin, task_uid]
+            if is_callback_code(action, "cm", "comment") =>
+        {
             Some(TelegramCallback::StartTaskCommentInput {
                 origin: parse_origin_code(origin)?,
                 task_uid: Uuid::parse_str(task_uid).ok()?,
             })
         }
-        [CALLBACK_GROUP_INPUT, "blocker", origin, task_uid] => {
+        [CALLBACK_GROUP_INPUT, action, origin, task_uid]
+            if is_callback_code(action, "b", "blocker") =>
+        {
             Some(TelegramCallback::StartTaskBlockerInput {
                 origin: parse_origin_code(origin)?,
                 task_uid: Uuid::parse_str(task_uid).ok()?,
             })
         }
-        [CALLBACK_GROUP_INPUT, "reassign", origin, task_uid] => {
+        [CALLBACK_GROUP_INPUT, action, origin, task_uid]
+            if is_callback_code(action, "r", "reassign") =>
+        {
             Some(TelegramCallback::StartTaskReassignInput {
                 origin: parse_origin_code(origin)?,
                 task_uid: Uuid::parse_str(task_uid).ok()?,
             })
         }
-        [CALLBACK_GROUP_INPUT, "delivery_help", origin, task_uid] => {
+        [CALLBACK_GROUP_INPUT, action, origin, task_uid]
+            if is_callback_code(action, "dh", "delivery_help") =>
+        {
             Some(TelegramCallback::ShowDeliveryHelp {
                 origin: parse_origin_code(origin)?,
                 task_uid: Uuid::parse_str(task_uid).ok()?,
@@ -300,63 +328,67 @@ fn parse_legacy_callback(value: &str) -> Option<TelegramCallback> {
     }
 }
 
+fn is_callback_code(value: &str, short: &str, legacy: &str) -> bool {
+    value == short || value == legacy
+}
+
 fn origin_code(origin: TaskListOrigin) -> &'static str {
     match origin {
-        TaskListOrigin::Assigned => "assigned",
-        TaskListOrigin::Created => "created",
-        TaskListOrigin::Team => "team",
-        TaskListOrigin::Focus => "focus",
-        TaskListOrigin::ManagerInbox => "manager_inbox",
+        TaskListOrigin::Assigned => "a",
+        TaskListOrigin::Created => "c",
+        TaskListOrigin::Team => "t",
+        TaskListOrigin::Focus => "f",
+        TaskListOrigin::ManagerInbox => "m",
     }
 }
 
 fn parse_origin_code(value: &str) -> Option<TaskListOrigin> {
     match value {
-        "assigned" => Some(TaskListOrigin::Assigned),
-        "created" => Some(TaskListOrigin::Created),
-        "team" => Some(TaskListOrigin::Team),
-        "focus" => Some(TaskListOrigin::Focus),
-        "manager_inbox" => Some(TaskListOrigin::ManagerInbox),
+        "a" | "assigned" => Some(TaskListOrigin::Assigned),
+        "c" | "created" => Some(TaskListOrigin::Created),
+        "t" | "team" => Some(TaskListOrigin::Team),
+        "f" | "focus" => Some(TaskListOrigin::Focus),
+        "m" | "manager_inbox" => Some(TaskListOrigin::ManagerInbox),
         _ => None,
     }
 }
 
 fn task_card_mode_code(mode: TaskCardMode) -> &'static str {
     match mode {
-        TaskCardMode::Compact => "compact",
-        TaskCardMode::Expanded => "expanded",
+        TaskCardMode::Compact => "c",
+        TaskCardMode::Expanded => "e",
     }
 }
 
 fn parse_task_card_mode(value: &str) -> Option<TaskCardMode> {
     match value {
-        "compact" => Some(TaskCardMode::Compact),
-        "expanded" => Some(TaskCardMode::Expanded),
+        "c" | "compact" => Some(TaskCardMode::Compact),
+        "e" | "expanded" => Some(TaskCardMode::Expanded),
         _ => None,
     }
 }
 
 fn task_status_code(status: TaskStatus) -> &'static str {
     match status {
-        TaskStatus::Created => "created",
-        TaskStatus::Sent => "sent",
-        TaskStatus::InProgress => "in_progress",
-        TaskStatus::Blocked => "blocked",
-        TaskStatus::InReview => "in_review",
-        TaskStatus::Completed => "completed",
-        TaskStatus::Cancelled => "cancelled",
+        TaskStatus::Created => "n",
+        TaskStatus::Sent => "s",
+        TaskStatus::InProgress => "p",
+        TaskStatus::Blocked => "b",
+        TaskStatus::InReview => "r",
+        TaskStatus::Completed => "d",
+        TaskStatus::Cancelled => "x",
     }
 }
 
 fn parse_task_status(value: &str) -> Option<TaskStatus> {
     match value {
-        "created" => Some(TaskStatus::Created),
-        "sent" => Some(TaskStatus::Sent),
-        "in_progress" => Some(TaskStatus::InProgress),
-        "blocked" => Some(TaskStatus::Blocked),
-        "in_review" => Some(TaskStatus::InReview),
-        "completed" => Some(TaskStatus::Completed),
-        "cancelled" => Some(TaskStatus::Cancelled),
+        "n" | "created" => Some(TaskStatus::Created),
+        "s" | "sent" => Some(TaskStatus::Sent),
+        "p" | "in_progress" => Some(TaskStatus::InProgress),
+        "b" | "blocked" => Some(TaskStatus::Blocked),
+        "r" | "in_review" => Some(TaskStatus::InReview),
+        "d" | "completed" => Some(TaskStatus::Completed),
+        "x" | "cancelled" => Some(TaskStatus::Cancelled),
         _ => None,
     }
 }
@@ -390,7 +422,7 @@ fn parse_draft_field(value: &str) -> Option<DraftEditField> {
 mod tests {
     use uuid::Uuid;
 
-    use super::{encode_callback, parse_callback};
+    use super::{encode_callback, parse_callback, TELEGRAM_CALLBACK_DATA_MAX_BYTES};
     use crate::domain::task::TaskStatus;
     use crate::presentation::telegram::callbacks::{
         TaskCardMode, TaskListOrigin, TelegramCallback,
@@ -409,6 +441,107 @@ mod tests {
         let parsed = parse_callback(&encoded);
 
         assert_eq!(parsed, Some(callback));
+    }
+
+    #[test]
+    fn given_task_callbacks_when_encoded_then_fit_telegram_callback_limit() {
+        let task_uid = Uuid::parse_str("019df794-9946-7c32-9483-f0e8c21e37ce").unwrap();
+        let origins = [
+            TaskListOrigin::Assigned,
+            TaskListOrigin::Created,
+            TaskListOrigin::Team,
+            TaskListOrigin::Focus,
+            TaskListOrigin::ManagerInbox,
+        ];
+        let statuses = [
+            TaskStatus::Created,
+            TaskStatus::Sent,
+            TaskStatus::InProgress,
+            TaskStatus::Blocked,
+            TaskStatus::InReview,
+            TaskStatus::Completed,
+            TaskStatus::Cancelled,
+        ];
+        let modes = [TaskCardMode::Compact, TaskCardMode::Expanded];
+        let mut callbacks = Vec::new();
+
+        for origin in origins {
+            callbacks.push(TelegramCallback::ListTasks {
+                origin,
+                cursor: None,
+            });
+            callbacks.push(TelegramCallback::ListTasks {
+                origin,
+                cursor: Some(task_uid.to_string()),
+            });
+            callbacks.push(TelegramCallback::ConfirmTaskCancel { task_uid, origin });
+            callbacks.push(TelegramCallback::ExecuteTaskCancel { task_uid, origin });
+            callbacks.push(TelegramCallback::StartTaskCommentInput { task_uid, origin });
+            callbacks.push(TelegramCallback::StartTaskBlockerInput { task_uid, origin });
+            callbacks.push(TelegramCallback::StartTaskReassignInput { task_uid, origin });
+            callbacks.push(TelegramCallback::ShowDeliveryHelp { task_uid, origin });
+
+            for mode in modes {
+                callbacks.push(TelegramCallback::OpenTask {
+                    task_uid,
+                    origin,
+                    mode,
+                });
+            }
+
+            for next_status in statuses {
+                callbacks.push(TelegramCallback::UpdateTaskStatus {
+                    task_uid,
+                    next_status,
+                    origin,
+                });
+            }
+        }
+
+        for callback in callbacks {
+            let encoded = encode_callback(&callback);
+            assert!(
+                encoded.len() <= TELEGRAM_CALLBACK_DATA_MAX_BYTES,
+                "callback_data exceeds Telegram limit: len={} data={encoded}",
+                encoded.len()
+            );
+            assert_eq!(parse_callback(&encoded), Some(callback));
+        }
+    }
+
+    #[test]
+    fn given_legacy_long_manager_inbox_callbacks_when_parse_then_backward_compatible() {
+        let task_uid = Uuid::parse_str("019df794-9946-7c32-9483-f0e8c21e37ce").unwrap();
+
+        let cases = [
+            (
+                format!("t:status:manager_inbox:{task_uid}:in_progress"),
+                TelegramCallback::UpdateTaskStatus {
+                    task_uid,
+                    next_status: TaskStatus::InProgress,
+                    origin: TaskListOrigin::ManagerInbox,
+                },
+            ),
+            (
+                format!("t:open:manager_inbox:{task_uid}:expanded"),
+                TelegramCallback::OpenTask {
+                    task_uid,
+                    origin: TaskListOrigin::ManagerInbox,
+                    mode: TaskCardMode::Expanded,
+                },
+            ),
+            (
+                format!("i:delivery_help:manager_inbox:{task_uid}"),
+                TelegramCallback::ShowDeliveryHelp {
+                    task_uid,
+                    origin: TaskListOrigin::ManagerInbox,
+                },
+            ),
+        ];
+
+        for (encoded, expected) in cases {
+            assert_eq!(parse_callback(&encoded), Some(expected));
+        }
     }
 
     #[test]

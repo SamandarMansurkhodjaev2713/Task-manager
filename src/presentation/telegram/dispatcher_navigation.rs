@@ -251,6 +251,16 @@ pub(crate) async fn sync_employees(
 
     match state.sync_employees_use_case.execute().await {
         Ok(count) => {
+            if let Err(error) = state
+                .register_user_use_case
+                .reconcile_existing_directory_links()
+                .await
+            {
+                tracing::warn!(
+                    code = error.code(),
+                    "employee sync completed but user link reconciliation failed"
+                );
+            }
             send_screen(
                 bot,
                 state,

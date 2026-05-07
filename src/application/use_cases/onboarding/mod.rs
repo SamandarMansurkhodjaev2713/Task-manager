@@ -124,6 +124,10 @@ impl OnboardingUseCase {
             )
             .await?;
 
+        if should_retry_completed_user_linking(&user) {
+            return self.retry_completed_user_linking(message, user).await;
+        }
+
         Ok(self.outcome_for(user))
     }
 
@@ -363,6 +367,38 @@ impl OnboardingUseCase {
         Ok(user)
     }
 
+    async fn retry_completed_user_linking(
+        &self,
+        message: &IncomingMessage,
+        user: User,
+    ) -> AppResult<OnboardingOutcome> {
+        match self.register_user_use_case.preview_linking(message).await? {
+            RegistrationLinkPreview::Ready(RegistrationLinkDecision::EmployeeId(employee_id)) => {
+                let actor = self
+                    .register_user_use_case
+                    .execute_with_link_decision(
+                        message,
+                        RegistrationLinkDecision::EmployeeId(employee_id),
+                    )
+                    .await?;
+                Ok(OnboardingOutcome::Completed { user: actor })
+            }
+            RegistrationLinkPreview::ClarificationRequired(clarification) => {
+                Ok(OnboardingOutcome::AskEmployeeLink {
+                    user,
+                    clarification: OnboardingEmployeeLinkClarification {
+                        message: clarification.message,
+                        candidates: clarification.candidates,
+                        allow_continue_unlinked: clarification.allow_continue_unlinked,
+                    },
+                })
+            }
+            RegistrationLinkPreview::Ready(
+                RegistrationLinkDecision::ContinueUnlinked | RegistrationLinkDecision::Auto,
+            ) => Ok(OnboardingOutcome::Completed { user }),
+        }
+    }
+
     /// Cheap read-only probe: "is this Telegram user currently in onboarding
     /// and, if so, at which step?"  Used by the dispatcher to decide whether
     /// a click on the employee-link keyboard should route to `OnboardingUseCase`
@@ -427,4 +463,17 @@ fn invalid_state_error(user: &User) -> AppError {
             "state": user.onboarding_state.as_storage_value(),
         }),
     )
+}
+
+fn should_retry_completed_user_linking(user: &User) -> bool {
+    matches!(user.onboarding_state, OnboardingState::Completed)
+        && user.linked_employee_id.is_none()
+        && user
+            .first_name
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+        && user
+            .last_name
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
 }

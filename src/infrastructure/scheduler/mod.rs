@@ -10,6 +10,7 @@ use crate::application::use_cases::enqueue_daily_summaries::EnqueueDailySummarie
 use crate::application::use_cases::enqueue_task_reminders::EnqueueTaskRemindersUseCase;
 use crate::application::use_cases::process_notifications::ProcessNotificationsUseCase;
 use crate::application::use_cases::process_recurrence_rules::ProcessRecurrenceRulesUseCase;
+use crate::application::use_cases::register_user::RegisterUserUseCase;
 use crate::application::use_cases::sheets_write_back::SheetsWriteBackUseCase;
 use crate::application::use_cases::sync_employees::SyncEmployeesUseCase;
 use crate::application::use_cases::update_sla_states::UpdateSlaStatesUseCase;
@@ -39,6 +40,7 @@ pub struct BackgroundJobs {
 
 pub struct BackgroundJobUseCases {
     pub sync_employees: Arc<SyncEmployeesUseCase>,
+    pub register_user: Arc<RegisterUserUseCase>,
     pub process_notifications: Arc<ProcessNotificationsUseCase>,
     pub enqueue_task_reminders: Arc<EnqueueTaskRemindersUseCase>,
     pub enqueue_daily_summaries: Arc<EnqueueDailySummariesUseCase>,
@@ -56,6 +58,7 @@ impl BackgroundJobs {
         let overdue_reminders_use_case = use_cases.enqueue_task_reminders.clone();
         let daily_summaries_use_case = use_cases.enqueue_daily_summaries.clone();
         let sync_employees_use_case = use_cases.sync_employees;
+        let register_user_use_case = use_cases.register_user;
         let process_notifications_use_case = use_cases.process_notifications;
         let update_sla_states_use_case = use_cases.update_sla_states;
         let process_recurrence_rules_use_case = use_cases.process_recurrence_rules;
@@ -67,9 +70,23 @@ impl BackgroundJobs {
                 Duration::from_secs(u64::from(config.employee_sync_interval_minutes.get()) * 60),
                 move || {
                     let sync_employees_use_case = sync_employees_use_case.clone();
+                    let register_user_use_case = register_user_use_case.clone();
                     async move {
-                        if let Err(error) = sync_employees_use_case.execute().await {
-                            tracing::error!(code = error.code(), "employee_sync_failed");
+                        match sync_employees_use_case.execute().await {
+                            Ok(_) => {
+                                if let Err(error) = register_user_use_case
+                                    .reconcile_existing_directory_links()
+                                    .await
+                                {
+                                    tracing::error!(
+                                        code = error.code(),
+                                        "employee_sync_user_reconciliation_failed"
+                                    );
+                                }
+                            }
+                            Err(error) => {
+                                tracing::error!(code = error.code(), "employee_sync_failed");
+                            }
                         }
                     }
                 },

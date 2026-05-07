@@ -1,6 +1,6 @@
 full_name,telegram_username,email,phone,department,is_active,role_note
 Самандар Мансурходжаев,samandar.manager,samandar.manager@example.com,+998901110001,Управление,true,admin candidate
-Абдулазиз Азизов,abdulaziz.azizov,abdulaziz.azizov@example.com,+998901110002,Производство,true,employee
+Абдулазиз Азизов,vivaldoff,abdulaziz.azizov@example.com,+998901110002,Производство,true,employee
 Мария Петрова,maria.petrova,maria.petrova@example.com,+998901110003,Операции,true,manager candidate
 Иван Иванов,ivan.ivanov,ivan.ivanov@example.com,+998901110004,Технический отдел,true,employee
 Алексей Смирнов,alexey.smirnov,alexey.smirnov@example.com,+998901110005,Сервис,true,employee

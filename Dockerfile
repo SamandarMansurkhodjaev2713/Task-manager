@@ -3,6 +3,8 @@ FROM rust:1.91-bookworm AS builder
 
 WORKDIR /app
 
+ARG CARGO_BUILD_JOBS=1
+ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
 ENV RUSTFLAGS=-Cdebuginfo=0
 
 # Build-time metadata.  Populated via `docker build --build-arg GIT_SHA=...`
@@ -29,6 +31,8 @@ FROM rust:1.91-bookworm AS test-runner
 
 WORKDIR /app
 
+ARG CARGO_BUILD_JOBS=1
+ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
 ENV RUSTFLAGS=-Cdebuginfo=0
 
 ARG GIT_SHA=unknown

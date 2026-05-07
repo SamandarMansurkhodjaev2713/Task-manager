@@ -21,7 +21,7 @@ Production-oriented Telegram bot for task intake, assignment, review, blockers, 
 - Onboarding v2: persistent FSM with first/last name capture before any other flow
 - RBAC (user / manager / admin) with last-admin protection, `.env` bootstrap, and in-Telegram `/admin` panel
 - Admin panel with users list, role changes, deactivate/reactivate, audit log, and feature-flag view — all destructive actions require a short-TTL nonce confirmation
-- Task search skeleton (`/find`) against the caller's assigned tasks
+- Task search (`/find`) against the caller's visible tasks
 - Personal activity block inlined into the profile screen
 - Health, deep-health, metrics and version endpoints
 
@@ -140,12 +140,16 @@ Invariants:
 - [docs/telegram-ux.md](./docs/telegram-ux.md)
 - [docs/operations.md](./docs/operations.md)
 - [docs/quality-roadmap.md](./docs/quality-roadmap.md)
+- [docs/production-readiness-2026-05-06.md](./docs/production-readiness-2026-05-06.md)
 
 ## Docker
 
 - `docker compose up telegram-task-bot`
 - `docker compose --profile test run --rm tests`
 - `docker compose --profile smoke run --rm smoke-check`
+
+Current pre-demo sign-off is documented in
+[docs/production-readiness-2026-05-06.md](./docs/production-readiness-2026-05-06.md).
 
 The Docker setup now uses:
 - multi-stage build
