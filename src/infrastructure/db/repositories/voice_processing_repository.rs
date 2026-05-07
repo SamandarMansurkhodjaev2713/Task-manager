@@ -186,6 +186,7 @@ impl VoiceProcessingRepository for SqliteVoiceProcessingRepository {
         &self,
         file_unique_id: &str,
         transcript_preview_hash: &str,
+        transcript_text: Option<&str>,
         now: DateTime<Utc>,
     ) -> AppResult<VoiceTransitionOutcome> {
         let mut tx = self.pool.begin().await.map_err(database_error)?;
@@ -212,11 +213,13 @@ impl VoiceProcessingRepository for SqliteVoiceProcessingRepository {
             "UPDATE voice_processing_records
              SET state = 'transcribed',
                  transcript_preview_hash = ?,
+                 transcript_text = ?,
                  completed_at = ?,
                  updated_at = ?
              WHERE file_unique_id = ?",
         )
         .bind(transcript_preview_hash)
+        .bind(transcript_text)
         .bind(now)
         .bind(now)
         .bind(file_unique_id)
@@ -242,17 +245,42 @@ impl VoiceProcessingRepository for SqliteVoiceProcessingRepository {
         )?))
     }
 
+    async fn fetch_cached_transcript(
+        &self,
+        file_unique_id: &str,
+    ) -> AppResult<Option<String>> {
+        let row = sqlx::query(
+            "SELECT transcript_text
+             FROM voice_processing_records
+             WHERE file_unique_id = ? AND state = 'transcribed'",
+        )
+        .bind(file_unique_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(database_error)?;
+
+        match row {
+            Some(row) => Ok(row
+                .try_get::<Option<String>, _>("transcript_text")
+                .map_err(database_error)?),
+            None => Ok(None),
+        }
+    }
+
     async fn purge_stale_payloads(&self, older_than: DateTime<Utc>) -> AppResult<u64> {
         // Only touch terminal records older than the retention window so
         // we never wipe state for an in-flight transcription.
         let result = sqlx::query(
             "UPDATE voice_processing_records
              SET transcript_preview_hash = NULL,
+                 transcript_text = NULL,
                  last_error_code = NULL
              WHERE completed_at IS NOT NULL
                AND completed_at < ?
                AND state IN ('transcribed', 'failed')
-               AND (transcript_preview_hash IS NOT NULL OR last_error_code IS NOT NULL)",
+               AND (transcript_preview_hash IS NOT NULL
+                    OR transcript_text IS NOT NULL
+                    OR last_error_code IS NOT NULL)",
         )
         .bind(older_than)
         .execute(&self.pool)

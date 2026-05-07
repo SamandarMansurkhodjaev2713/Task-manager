@@ -84,7 +84,7 @@ impl<'a> VoiceCreateCoordinator<'a> {
         match self
             .state
             .create_task_use_case
-            .transcribe_voice_message(&incoming_message)
+            .transcribe_voice_message(&incoming_message, actor.id)
             .await
         {
             Ok(transcript) => match NormalizedTranscript::from_raw(&transcript) {
@@ -437,6 +437,14 @@ fn transcription_error_text(error: &AppError) -> String {
         }
         "CIRCUIT_BREAKER_OPEN" => {
             "🔌 Сервис распознавания временно недоступен. Попробуйте позже или напишите текстом."
+                .to_owned()
+        }
+        "VOICE_TRANSCRIBING_IN_PROGRESS" => {
+            "🔄 Это голосовое уже обрабатывается. Подождите несколько секунд — расшифровка появится сама."
+                .to_owned()
+        }
+        "VOICE_TRANSCRIPTION_CACHED_FAILURE" => {
+            "⚠️ Это голосовое уже не получилось распознать ранее. Попробуйте записать заново или напишите задачу текстом."
                 .to_owned()
         }
         _ => "⚠️ Не удалось обработать голосовое. Попробуйте ещё раз или напишите текстом."

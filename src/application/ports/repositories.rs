@@ -539,19 +539,32 @@ pub trait VoiceProcessingRepository: Send + Sync {
     ) -> AppResult<VoiceTransitionOutcome>;
 
     /// Records a successful transcription, including the preview hash used
-    /// to avoid echoing raw content back into logs.
+    /// to avoid echoing raw content back into logs.  When `transcript_text`
+    /// is `Some(text)`, the full transcript is cached on the row so a
+    /// duplicate webhook delivery returns the previous result instead of
+    /// re-charging the STT provider; the cached text is wiped together with
+    /// the rest of the row's payload by [`Self::purge_stale_payloads`].
     async fn mark_transcribed(
         &self,
         file_unique_id: &str,
         transcript_preview_hash: &str,
+        transcript_text: Option<&str>,
         now: chrono::DateTime<chrono::Utc>,
     ) -> AppResult<VoiceTransitionOutcome>;
 
+    /// Returns the cached transcript text for a previously-transcribed
+    /// record, or `None` when nothing has been cached (e.g. the row is
+    /// `failed`, the cache was purged, or no row exists).
+    async fn fetch_cached_transcript(
+        &self,
+        file_unique_id: &str,
+    ) -> AppResult<Option<String>>;
+
     /// Scrubs transcript-derived payloads on records that completed
     /// more than `older_than` ago.  Keeps the row itself so retried
-    /// webhooks stay idempotent, but removes `transcript_preview_hash`
-    /// and `last_error_code` (when it contained user-facing details).
-    /// Returns the number of rows scrubbed.
+    /// webhooks stay idempotent, but removes `transcript_preview_hash`,
+    /// the cached `transcript_text`, and `last_error_code` (when it
+    /// contained user-facing details).  Returns the number of rows scrubbed.
     ///
     /// Implementations MUST be idempotent and never touch rows whose
     /// state is not terminal.

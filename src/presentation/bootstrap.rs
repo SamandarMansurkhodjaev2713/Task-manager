@@ -40,7 +40,7 @@ use crate::infrastructure::db::repositories::{
     SqliteAuditLogRepository, SqliteCommentRepository, SqliteEmployeeRepository,
     SqliteFeatureFlagRepository, SqliteNotificationRepository, SqliteRecurrenceRepository,
     SqliteSecurityAuditLogRepository, SqliteSheetsSyncRepository, SqliteSlaRepository,
-    SqliteTaskRepository, SqliteUserRepository,
+    SqliteTaskRepository, SqliteUserRepository, SqliteVoiceProcessingRepository,
 };
 use crate::infrastructure::employee_directory::google_sheets_client::GoogleSheetsEmployeeDirectory;
 use crate::infrastructure::employee_directory::local_directory::LocalEmployeeDirectory;
@@ -98,6 +98,8 @@ pub async fn run_application(config: AppConfig) -> AppResult<()> {
     let alias_repository = Arc::new(SqliteAliasRepository::new(pool.clone()));
     let assignee_history_repository = Arc::new(SqliteAssigneeHistoryRepository::new(pool.clone()));
     let sheets_sync_repository = Arc::new(SqliteSheetsSyncRepository::new(pool.clone()));
+    let voice_processing_repository =
+        Arc::new(SqliteVoiceProcessingRepository::new(pool.clone()));
 
     // ── Feature flags ─────────────────────────────────────────────────────
     // Build the in-memory registry from ENV defaults, then layer in any
@@ -211,6 +213,7 @@ pub async fn run_application(config: AppConfig) -> AppResult<()> {
         task_generator,
         speech_to_text_service,
         assignee_resolver.clone(),
+        voice_processing_repository,
     ));
     let list_tasks_use_case = Arc::new(ListTasksUseCase::new(
         clock.clone(),
