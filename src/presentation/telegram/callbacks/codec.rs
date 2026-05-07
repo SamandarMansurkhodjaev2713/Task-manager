@@ -1,3 +1,4 @@
+use metrics::counter;
 use uuid::Uuid;
 
 use crate::domain::task::TaskStatus;
@@ -15,7 +16,46 @@ const CALLBACK_GROUP_INPUT: &str = "i";
 const CALLBACK_GROUP_ADMIN: &str = "a";
 const EMPTY_CURSOR: &str = "_";
 
+/// Telegram Bot API hard limit on `callback_data` size (Bots API spec).
+/// Encoded callbacks longer than this would be rejected by Telegram with
+/// `BUTTON_DATA_INVALID`, which crashes the keyboard render at runtime.
+pub const TELEGRAM_CALLBACK_DATA_MAX_BYTES: usize = 64;
+
+/// Safe fallback payload used when an encoded callback exceeds
+/// [`TELEGRAM_CALLBACK_DATA_MAX_BYTES`].  Routes the user to the main menu
+/// where any state can be recovered, instead of crashing the keyboard.
+const CALLBACK_OVERFLOW_FALLBACK: &str = "m:home";
+
+// Compile-time guarantee that the fallback itself never overflows.
+const _: () = {
+    assert!(CALLBACK_OVERFLOW_FALLBACK.len() <= TELEGRAM_CALLBACK_DATA_MAX_BYTES);
+};
+
 pub fn encode_callback(callback: &TelegramCallback) -> String {
+    let encoded = encode_callback_inner(callback);
+    if encoded.len() > TELEGRAM_CALLBACK_DATA_MAX_BYTES {
+        // dev/test: surface the bug loudly so it does not slip past CI.
+        debug_assert!(
+            false,
+            "callback_data length {} exceeds Telegram limit {}: {encoded}",
+            encoded.len(),
+            TELEGRAM_CALLBACK_DATA_MAX_BYTES,
+        );
+        // release: emit telemetry and route the user to a safe screen
+        // instead of crashing the keyboard render.
+        let preview_len = encoded.len().min(40);
+        tracing::error!(
+            len = encoded.len(),
+            preview = %&encoded[..preview_len],
+            "callback_data_overflow"
+        );
+        counter!("telegram_callback_overflow_total").increment(1);
+        return CALLBACK_OVERFLOW_FALLBACK.to_owned();
+    }
+    encoded
+}
+
+fn encode_callback_inner(callback: &TelegramCallback) -> String {
     match callback {
         TelegramCallback::MenuHome => format!("{CALLBACK_GROUP_MENU}:home"),
         TelegramCallback::MenuHelp => format!("{CALLBACK_GROUP_MENU}:help"),
@@ -294,18 +334,40 @@ fn parse_legacy_callback(value: &str) -> Option<TelegramCallback> {
     }
 }
 
+// ── Compact codes for `callback_data` ──────────────────────────────────────
+//
+// Telegram's 64-byte limit on `callback_data` leaves ~21 bytes for variable
+// segments after a `prefix:UUID` (where UUID alone is 36 bytes).  The verbose
+// English codes used previously consumed too much of that budget — for
+// example `t:open:manager_inbox:UUID:expanded` encoded to 66 bytes and was
+// silently rejected by Telegram with `BUTTON_DATA_INVALID`.  We now emit
+// short codes (1–2 chars) and accept the historical long codes on the parse
+// side so callbacks captured in users' chat history before this change keep
+// working.
+//
+// Whenever you add a new variant: pick a 1–2 char code, update both the
+// encoder and the parser, and add the long form to the parser's match arm
+// for backward compatibility.
+
 fn origin_code(origin: TaskListOrigin) -> &'static str {
     match origin {
-        TaskListOrigin::Assigned => "assigned",
-        TaskListOrigin::Created => "created",
-        TaskListOrigin::Team => "team",
-        TaskListOrigin::Focus => "focus",
-        TaskListOrigin::ManagerInbox => "manager_inbox",
+        TaskListOrigin::Assigned => "a",
+        TaskListOrigin::Created => "c",
+        TaskListOrigin::Team => "t",
+        TaskListOrigin::Focus => "f",
+        TaskListOrigin::ManagerInbox => "mi",
     }
 }
 
 fn parse_origin_code(value: &str) -> Option<TaskListOrigin> {
     match value {
+        // Compact codes (current encoder output)
+        "a" => Some(TaskListOrigin::Assigned),
+        "c" => Some(TaskListOrigin::Created),
+        "t" => Some(TaskListOrigin::Team),
+        "f" => Some(TaskListOrigin::Focus),
+        "mi" => Some(TaskListOrigin::ManagerInbox),
+        // Long-form codes (legacy callbacks still in user chat history)
         "assigned" => Some(TaskListOrigin::Assigned),
         "created" => Some(TaskListOrigin::Created),
         "team" => Some(TaskListOrigin::Team),
@@ -317,33 +379,42 @@ fn parse_origin_code(value: &str) -> Option<TaskListOrigin> {
 
 fn task_card_mode_code(mode: TaskCardMode) -> &'static str {
     match mode {
-        TaskCardMode::Compact => "compact",
-        TaskCardMode::Expanded => "expanded",
+        TaskCardMode::Compact => "c",
+        TaskCardMode::Expanded => "e",
     }
 }
 
 fn parse_task_card_mode(value: &str) -> Option<TaskCardMode> {
     match value {
-        "compact" => Some(TaskCardMode::Compact),
-        "expanded" => Some(TaskCardMode::Expanded),
+        "c" | "compact" => Some(TaskCardMode::Compact),
+        "e" | "expanded" => Some(TaskCardMode::Expanded),
         _ => None,
     }
 }
 
 fn task_status_code(status: TaskStatus) -> &'static str {
     match status {
-        TaskStatus::Created => "created",
-        TaskStatus::Sent => "sent",
-        TaskStatus::InProgress => "in_progress",
-        TaskStatus::Blocked => "blocked",
-        TaskStatus::InReview => "in_review",
-        TaskStatus::Completed => "completed",
-        TaskStatus::Cancelled => "cancelled",
+        TaskStatus::Created => "cr",
+        TaskStatus::Sent => "se",
+        TaskStatus::InProgress => "ip",
+        TaskStatus::Blocked => "bl",
+        TaskStatus::InReview => "ir",
+        TaskStatus::Completed => "co",
+        TaskStatus::Cancelled => "ca",
     }
 }
 
 fn parse_task_status(value: &str) -> Option<TaskStatus> {
     match value {
+        // Compact codes (current encoder output)
+        "cr" => Some(TaskStatus::Created),
+        "se" => Some(TaskStatus::Sent),
+        "ip" => Some(TaskStatus::InProgress),
+        "bl" => Some(TaskStatus::Blocked),
+        "ir" => Some(TaskStatus::InReview),
+        "co" => Some(TaskStatus::Completed),
+        "ca" => Some(TaskStatus::Cancelled),
+        // Long-form codes (legacy callbacks still in user chat history)
         "created" => Some(TaskStatus::Created),
         "sent" => Some(TaskStatus::Sent),
         "in_progress" => Some(TaskStatus::InProgress),
@@ -556,5 +627,65 @@ mod tests {
         let parsed = parse_callback(&encoded);
 
         assert_eq!(parsed, Some(callback));
+    }
+
+    /// Sanity check: every well-formed callback fits the Telegram 64-byte
+    /// limit. Uses the longest plausible UUID/role payload to ensure we
+    /// keep headroom for future variants.
+    #[test]
+    fn given_realistic_callbacks_when_encoded_then_fit_telegram_limit() {
+        use crate::presentation::telegram::callbacks::AdminRoleOption;
+        use super::TELEGRAM_CALLBACK_DATA_MAX_BYTES;
+
+        let task_uid = Uuid::now_v7();
+        let probes: Vec<TelegramCallback> = vec![
+            TelegramCallback::MenuHome,
+            TelegramCallback::OpenTask {
+                task_uid,
+                origin: TaskListOrigin::ManagerInbox,
+                mode: TaskCardMode::Expanded,
+            },
+            TelegramCallback::UpdateTaskStatus {
+                task_uid,
+                next_status: TaskStatus::InProgress,
+                origin: TaskListOrigin::ManagerInbox,
+            },
+            TelegramCallback::AdminUserPrepareRoleChange {
+                user_id: i64::MAX,
+                next_role: AdminRoleOption::Manager,
+            },
+            TelegramCallback::AdminConfirmNonce {
+                nonce: "0123456789abcdef0123456789abcdef".to_owned(),
+            },
+            TelegramCallback::AdminToggleFeature {
+                flag_key: "voice_create".to_owned(),
+            },
+        ];
+
+        for callback in probes {
+            let encoded = encode_callback(&callback);
+            assert!(
+                encoded.len() <= TELEGRAM_CALLBACK_DATA_MAX_BYTES,
+                "callback {callback:?} encoded to {} bytes (>{TELEGRAM_CALLBACK_DATA_MAX_BYTES}): {encoded}",
+                encoded.len()
+            );
+        }
+    }
+
+    /// In release mode (when `debug_assert!` is compiled out) an
+    /// overflowing callback must NOT propagate raw bytes to Telegram —
+    /// instead it must return the safe fallback. We can't trip the
+    /// debug-assert path inside the same binary, so this asserts the
+    /// release behaviour gated on `cfg(not(debug_assertions))`.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn given_artificially_oversized_callback_when_release_build_then_returns_fallback() {
+        let callback = TelegramCallback::AdminToggleFeature {
+            flag_key: "x".repeat(80),
+        };
+
+        let encoded = encode_callback(&callback);
+
+        assert_eq!(encoded, "m:home", "expected safe fallback on overflow");
     }
 }
