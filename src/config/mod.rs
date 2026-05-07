@@ -98,6 +98,15 @@ pub struct SchedulerConfig {
     pub daily_deadline_reminder_hour_utc: u32,
     pub daily_overdue_scan_hour_utc: u32,
     pub daily_summary_hour_utc: u32,
+    /// How often (seconds) the SLA-escalation scanner runs.
+    /// Env: `SLA_CHECK_INTERVAL_SECONDS`.  Default: 300 (5 minutes).
+    pub sla_check_interval_seconds: NonZeroU32,
+    /// How often (seconds) the recurrence-rule scheduler ticks.
+    /// Env: `RECURRENCE_CHECK_INTERVAL_SECONDS`.  Default: 60.
+    pub recurrence_check_interval_seconds: NonZeroU32,
+    /// How often (seconds) the Sheets write-back flush runs.
+    /// Env: `WRITE_BACK_FLUSH_INTERVAL_SECONDS`.  Default: 300 (5 minutes).
+    pub write_back_flush_interval_seconds: NonZeroU32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -211,6 +220,15 @@ impl AppConfig {
                 daily_deadline_reminder_hour_utc: optional_u32("DEADLINE_REMINDER_HOUR_UTC", 9)?,
                 daily_overdue_scan_hour_utc: optional_u32("OVERDUE_SCAN_HOUR_UTC", 10)?,
                 daily_summary_hour_utc: optional_u32("DAILY_SUMMARY_HOUR_UTC", 8)?,
+                sla_check_interval_seconds: non_zero_u32("SLA_CHECK_INTERVAL_SECONDS", 300)?,
+                recurrence_check_interval_seconds: non_zero_u32(
+                    "RECURRENCE_CHECK_INTERVAL_SECONDS",
+                    60,
+                )?,
+                write_back_flush_interval_seconds: non_zero_u32(
+                    "WRITE_BACK_FLUSH_INTERVAL_SECONDS",
+                    300,
+                )?,
             },
             bot: BotBehaviorConfig {
                 rate_limit_per_minute: non_zero_u32(

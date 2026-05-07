@@ -14,21 +14,12 @@ use crate::application::use_cases::sync_employees::SyncEmployeesUseCase;
 use crate::application::use_cases::update_sla_states::UpdateSlaStatesUseCase;
 use crate::config::SchedulerConfig;
 
-/// Interval between SLA escalation scans.  Five minutes is a reasonable
-/// upper bound for how stale the `sla_state` column can be — short enough
-/// to catch transitions before the next morning standup, long enough to
-/// avoid hammering SQLite on idle systems.
-const SLA_CHECK_INTERVAL: Duration = Duration::from_secs(5 * 60);
-
-/// Interval between recurrence-rule scheduler ticks.  One minute means
-/// CRON expressions can fire with ≤ 60-second jitter, which is acceptable
-/// for task-management workflows.
-const RECURRENCE_CHECK_INTERVAL: Duration = Duration::from_secs(60);
-
-/// Interval between write-back flush runs.  Five minutes is a good balance:
-/// short enough that newly registered employees appear in Sheets within one
-/// work-hour, long enough to avoid hammering the Sheets API quota.
-const WRITE_BACK_FLUSH_INTERVAL: Duration = Duration::from_secs(5 * 60);
+// NOTE: SLA_CHECK_INTERVAL, RECURRENCE_CHECK_INTERVAL, and
+// WRITE_BACK_FLUSH_INTERVAL are no longer compile-time constants (M-05).
+// They are now read from SchedulerConfig at startup, which in turn reads
+// SLA_CHECK_INTERVAL_SECONDS / RECURRENCE_CHECK_INTERVAL_SECONDS /
+// WRITE_BACK_FLUSH_INTERVAL_SECONDS from the environment.  This lets
+// operators tune these values in docker-compose.yml without a code change.
 
 pub struct BackgroundJobs {
     cancellation_token: CancellationToken,
@@ -126,17 +117,21 @@ impl BackgroundJobs {
                     }
                 },
             ),
-            spawn_interval_job(cancellation_token.clone(), SLA_CHECK_INTERVAL, move || {
-                let uc = update_sla_states_use_case.clone();
-                async move {
-                    if let Err(error) = uc.execute().await {
-                        tracing::error!(code = error.code(), "sla_escalation_scan_failed");
-                    }
-                }
-            }),
             spawn_interval_job(
                 cancellation_token.clone(),
-                RECURRENCE_CHECK_INTERVAL,
+                Duration::from_secs(u64::from(config.sla_check_interval_seconds.get())),
+                move || {
+                    let uc = update_sla_states_use_case.clone();
+                    async move {
+                        if let Err(error) = uc.execute().await {
+                            tracing::error!(code = error.code(), "sla_escalation_scan_failed");
+                        }
+                    }
+                },
+            ),
+            spawn_interval_job(
+                cancellation_token.clone(),
+                Duration::from_secs(u64::from(config.recurrence_check_interval_seconds.get())),
                 move || {
                     let uc = process_recurrence_rules_use_case.clone();
                     async move {
@@ -151,7 +146,7 @@ impl BackgroundJobs {
             ),
             spawn_interval_job(
                 cancellation_token.clone(),
-                WRITE_BACK_FLUSH_INTERVAL,
+                Duration::from_secs(u64::from(config.write_back_flush_interval_seconds.get())),
                 move || {
                     let uc = sheets_write_back_use_case.clone();
                     async move {
