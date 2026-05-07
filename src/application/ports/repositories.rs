@@ -572,10 +572,7 @@ pub trait VoiceProcessingRepository: Send + Sync {
     /// Returns the cached transcript text for a previously-transcribed
     /// record, or `None` when nothing has been cached (e.g. the row is
     /// `failed`, the cache was purged, or no row exists).
-    async fn fetch_cached_transcript(
-        &self,
-        file_unique_id: &str,
-    ) -> AppResult<Option<String>>;
+    async fn fetch_cached_transcript(&self, file_unique_id: &str) -> AppResult<Option<String>>;
 
     /// Scrubs transcript-derived payloads on records that completed
     /// more than `older_than` ago.  Keeps the row itself so retried

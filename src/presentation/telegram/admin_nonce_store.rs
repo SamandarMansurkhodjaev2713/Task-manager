@@ -262,7 +262,11 @@ mod tests {
         {
             let past = Instant::now()
                 .checked_sub(Duration::from_secs(120))
-                .unwrap_or_else(|| Instant::now().checked_sub(Duration::from_millis(1)).unwrap());
+                .unwrap_or_else(|| {
+                    Instant::now()
+                        .checked_sub(Duration::from_millis(1))
+                        .unwrap()
+                });
             let mut guard = store.inner.lock().unwrap();
             if let Some(entry) = guard.get_mut(&nonce) {
                 entry.expires_at = past;

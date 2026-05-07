@@ -634,8 +634,8 @@ mod tests {
     /// keep headroom for future variants.
     #[test]
     fn given_realistic_callbacks_when_encoded_then_fit_telegram_limit() {
-        use crate::presentation::telegram::callbacks::AdminRoleOption;
         use super::TELEGRAM_CALLBACK_DATA_MAX_BYTES;
+        use crate::presentation::telegram::callbacks::AdminRoleOption;
 
         let task_uid = Uuid::now_v7();
         let probes: Vec<TelegramCallback> = vec![

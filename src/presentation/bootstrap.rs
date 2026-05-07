@@ -98,8 +98,7 @@ pub async fn run_application(config: AppConfig) -> AppResult<()> {
     let alias_repository = Arc::new(SqliteAliasRepository::new(pool.clone()));
     let assignee_history_repository = Arc::new(SqliteAssigneeHistoryRepository::new(pool.clone()));
     let sheets_sync_repository = Arc::new(SqliteSheetsSyncRepository::new(pool.clone()));
-    let voice_processing_repository =
-        Arc::new(SqliteVoiceProcessingRepository::new(pool.clone()));
+    let voice_processing_repository = Arc::new(SqliteVoiceProcessingRepository::new(pool.clone()));
 
     // ── Feature flags ─────────────────────────────────────────────────────
     // Build the in-memory registry from ENV defaults, then layer in any

@@ -98,13 +98,12 @@ impl SheetsSyncRepository for SqliteSheetsSyncRepository {
     /// backs off 1 min; second → 2 min; third → 4 min; … cap → 4 h.
     async fn record_error(&self, id: i64, error: &str, now: DateTime<Utc>) -> AppResult<()> {
         // Read current error_count to compute backoff before updating.
-        let current: i64 = sqlx::query_scalar(
-            "SELECT error_count FROM pending_sheet_writes WHERE id = ?",
-        )
-        .bind(id)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(database_error)?;
+        let current: i64 =
+            sqlx::query_scalar("SELECT error_count FROM pending_sheet_writes WHERE id = ?")
+                .bind(id)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(database_error)?;
 
         // delay = min(2^error_count, MAX_BACKOFF_MINUTES) minutes
         let backoff_minutes = std::cmp::min(

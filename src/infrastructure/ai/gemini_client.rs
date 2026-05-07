@@ -127,8 +127,10 @@ impl GeminiTaskGenerator {
         // (it's just a String copy) and avoids mutating the caller's data.
         let capped_request;
         let parsed_request = if parsed_request.task_description.len() > MAX_GEMINI_INPUT_LENGTH {
-            let truncated =
-                truncate_to_char_boundary(&parsed_request.task_description, MAX_GEMINI_INPUT_LENGTH);
+            let truncated = truncate_to_char_boundary(
+                &parsed_request.task_description,
+                MAX_GEMINI_INPUT_LENGTH,
+            );
             tracing::warn!(
                 target: "telegram_task_bot::ai",
                 original_bytes = parsed_request.task_description.len(),

@@ -804,9 +804,7 @@ mod rate_limit_exemption_tests {
     #[test]
     fn given_regular_menu_callback_then_not_exempt() {
         assert!(!is_callback_rate_limit_exempt(&TelegramCallback::MenuHome));
-        assert!(!is_callback_rate_limit_exempt(
-            &TelegramCallback::MenuStats
-        ));
+        assert!(!is_callback_rate_limit_exempt(&TelegramCallback::MenuStats));
     }
 
     #[test]

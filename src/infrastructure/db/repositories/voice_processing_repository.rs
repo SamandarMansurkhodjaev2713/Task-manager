@@ -245,10 +245,7 @@ impl VoiceProcessingRepository for SqliteVoiceProcessingRepository {
         )?))
     }
 
-    async fn fetch_cached_transcript(
-        &self,
-        file_unique_id: &str,
-    ) -> AppResult<Option<String>> {
+    async fn fetch_cached_transcript(&self, file_unique_id: &str) -> AppResult<Option<String>> {
         let row = sqlx::query(
             "SELECT transcript_text
              FROM voice_processing_records

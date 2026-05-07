@@ -4,8 +4,8 @@
 //! `file_unique_id` MUST NOT charge OpenAI a second time, and MUST return
 //! the cached transcript on retry.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDate, Utc};
@@ -26,7 +26,9 @@ use telegram_task_bot::application::use_cases::create_task_from_message::{
 };
 use telegram_task_bot::domain::audit::AuditLogEntry;
 use telegram_task_bot::domain::errors::{AppError, AppResult};
-use telegram_task_bot::domain::message::{IncomingMessage, MessageContent, ParsedTaskRequest, VoiceAttachment};
+use telegram_task_bot::domain::message::{
+    IncomingMessage, MessageContent, ParsedTaskRequest, VoiceAttachment,
+};
 use telegram_task_bot::domain::notification::{Notification, NotificationType};
 use telegram_task_bot::domain::task::{StructuredTaskDraft, Task, TaskStats};
 use telegram_task_bot::domain::user::{User, UserRole};
@@ -118,32 +120,61 @@ impl TaskRepository for InMemoryTaskRepository {
     async fn create_if_absent(&self, _task: &Task) -> AppResult<PersistedTask> {
         Err(AppError::internal("UNUSED", "test", json!({})))
     }
-    async fn find_by_id(&self, _id: i64) -> AppResult<Option<Task>> { Ok(None) }
-    async fn find_by_uid(&self, _uid: Uuid) -> AppResult<Option<Task>> { Ok(None) }
+    async fn find_by_id(&self, _id: i64) -> AppResult<Option<Task>> {
+        Ok(None)
+    }
+    async fn find_by_uid(&self, _uid: Uuid) -> AppResult<Option<Task>> {
+        Ok(None)
+    }
     async fn update(&self, _task: &Task) -> AppResult<Task> {
         Err(AppError::internal("UNUSED", "test", json!({})))
     }
     async fn list_assigned_to_user(
-        &self, _user_id: i64, _cursor: Option<String>, _limit: u32,
-    ) -> AppResult<Vec<Task>> { Ok(vec![]) }
+        &self,
+        _user_id: i64,
+        _cursor: Option<String>,
+        _limit: u32,
+    ) -> AppResult<Vec<Task>> {
+        Ok(vec![])
+    }
     async fn list_open_assigned_to_employee_without_user(
-        &self, _employee_id: i64, _limit: i64,
-    ) -> AppResult<Vec<Task>> { Ok(vec![]) }
+        &self,
+        _employee_id: i64,
+        _limit: i64,
+    ) -> AppResult<Vec<Task>> {
+        Ok(vec![])
+    }
     async fn list_created_by_user(
-        &self, _user_id: i64, _cursor: Option<String>, _limit: u32,
-    ) -> AppResult<Vec<Task>> { Ok(vec![]) }
+        &self,
+        _user_id: i64,
+        _cursor: Option<String>,
+        _limit: u32,
+    ) -> AppResult<Vec<Task>> {
+        Ok(vec![])
+    }
     async fn list_all(&self, _cursor: Option<String>, _limit: u32) -> AppResult<Vec<Task>> {
         Ok(vec![])
     }
     async fn get_due_between(
-        &self, _start: NaiveDate, _end: NaiveDate, _limit: i64,
-    ) -> AppResult<Vec<Task>> { Ok(vec![]) }
-    async fn get_overdue(&self, _as_of: NaiveDate, _limit: i64) -> AppResult<Vec<Task>> { Ok(vec![]) }
+        &self,
+        _start: NaiveDate,
+        _end: NaiveDate,
+        _limit: i64,
+    ) -> AppResult<Vec<Task>> {
+        Ok(vec![])
+    }
+    async fn get_overdue(&self, _as_of: NaiveDate, _limit: i64) -> AppResult<Vec<Task>> {
+        Ok(vec![])
+    }
     async fn count_stats_for_user(&self, _user_id: i64) -> AppResult<TaskStats> {
         Ok(empty_stats())
     }
-    async fn count_stats_global(&self) -> AppResult<TaskStats> { Ok(empty_stats()) }
-    async fn list_open(&self, _limit: i64) -> AppResult<Vec<Task>> { Ok(vec![]) }
+    async fn count_stats_global(&self) -> AppResult<TaskStats> {
+        Ok(empty_stats())
+    }
+    async fn list_open(&self, _limit: i64) -> AppResult<Vec<Task>> {
+        Ok(vec![])
+    }
     async fn list_active(&self, _cursor: Option<String>, _limit: u32) -> AppResult<Vec<Task>> {
         Ok(vec![])
     }
@@ -154,17 +185,37 @@ struct NoopNotificationRepo;
 
 #[async_trait]
 impl NotificationRepository for NoopNotificationRepo {
-    async fn enqueue(&self, n: &Notification) -> AppResult<Notification> { Ok(n.clone()) }
-    async fn list_pending(&self, _limit: i64) -> AppResult<Vec<Notification>> { Ok(vec![]) }
-    async fn mark_sent(&self, _id: i64, _msg_id: i32, _at: DateTime<Utc>) -> AppResult<()> { Ok(()) }
+    async fn enqueue(&self, n: &Notification) -> AppResult<Notification> {
+        Ok(n.clone())
+    }
+    async fn list_pending(&self, _limit: i64) -> AppResult<Vec<Notification>> {
+        Ok(vec![])
+    }
+    async fn mark_sent(&self, _id: i64, _msg_id: i32, _at: DateTime<Utc>) -> AppResult<()> {
+        Ok(())
+    }
     async fn mark_retry_pending(
-        &self, _id: i64, _next: DateTime<Utc>, _code: &'static str,
-    ) -> AppResult<()> { Ok(()) }
-    async fn mark_failed(&self, _id: i64, _code: &'static str) -> AppResult<()> { Ok(()) }
-    async fn requeue(&self, _id: i64) -> AppResult<()> { Ok(()) }
+        &self,
+        _id: i64,
+        _next: DateTime<Utc>,
+        _code: &'static str,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+    async fn mark_failed(&self, _id: i64, _code: &'static str) -> AppResult<()> {
+        Ok(())
+    }
+    async fn requeue(&self, _id: i64) -> AppResult<()> {
+        Ok(())
+    }
     async fn find_latest_for_task_and_recipient(
-        &self, _task_id: i64, _recipient: i64, _kind: NotificationType,
-    ) -> AppResult<Option<Notification>> { Ok(None) }
+        &self,
+        _task_id: i64,
+        _recipient: i64,
+        _kind: NotificationType,
+    ) -> AppResult<Option<Notification>> {
+        Ok(None)
+    }
 }
 
 #[derive(Default)]
@@ -175,7 +226,9 @@ impl AuditLogRepository for NoopAuditLog {
     async fn append(&self, entry: &AuditLogEntry) -> AppResult<AuditLogEntry> {
         Ok(entry.clone())
     }
-    async fn list_for_task(&self, _task_id: i64) -> AppResult<Vec<AuditLogEntry>> { Ok(vec![]) }
+    async fn list_for_task(&self, _task_id: i64) -> AppResult<Vec<AuditLogEntry>> {
+        Ok(vec![])
+    }
 }
 
 #[derive(Default)]
@@ -184,11 +237,20 @@ struct NoopHistory;
 #[async_trait]
 impl AssigneeHistoryRepository for NoopHistory {
     async fn record_assignment(
-        &self, _creator: i64, _employee: i64, _now: DateTime<Utc>,
-    ) -> AppResult<()> { Ok(()) }
+        &self,
+        _creator: i64,
+        _employee: i64,
+        _now: DateTime<Utc>,
+    ) -> AppResult<()> {
+        Ok(())
+    }
     async fn top_for_creator(
-        &self, _creator: i64, _limit: u32,
-    ) -> AppResult<Vec<AssigneeHistoryEntry>> { Ok(vec![]) }
+        &self,
+        _creator: i64,
+        _limit: u32,
+    ) -> AppResult<Vec<AssigneeHistoryEntry>> {
+        Ok(vec![])
+    }
 }
 
 // ─── Fixture ──────────────────────────────────────────────────────────────
@@ -325,7 +387,11 @@ async fn given_distinct_file_unique_ids_then_each_call_hits_stt_independently() 
         .await
         .expect("second call");
 
-    assert_eq!(stt.call_count(), 2, "different keys must not share the cache");
+    assert_eq!(
+        stt.call_count(),
+        2,
+        "different keys must not share the cache"
+    );
 }
 
 // ─── Suppress dead_code lints for unused trait stubs ──────────────────────
