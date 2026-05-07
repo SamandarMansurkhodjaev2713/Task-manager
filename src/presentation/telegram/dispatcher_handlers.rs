@@ -1,3 +1,4 @@
+use teloxide::payloads::AnswerCallbackQuerySetters;
 use teloxide::prelude::Requester;
 use teloxide::types::ChatId;
 use teloxide::Bot;
@@ -371,15 +372,69 @@ pub(crate) async fn check_rate_limit(
         return Ok(true);
     }
 
-    // Record the rate-limit event in the security audit log so ops can
-    // identify storms without needing to grep structured logs.
+    audit_rate_limit_breach(state, actor, chat_id.0).await;
+    bot.send_message(chat_id, RATE_LIMIT_MESSAGE).await?;
+    Ok(false)
+}
+
+/// Rate-limits a callback press from the same actor.  Differs from
+/// [`check_rate_limit`] in two ways:
+///
+/// 1. The reply is delivered via `answerCallbackQuery` (toast) instead of
+///    `sendMessage`, so a callback storm does not flood the chat with
+///    rate-limit messages and fragment the user's screen state.
+/// 2. Honours [`is_callback_rate_limit_exempt`] for destructive admin
+///    confirmations — blocking those would lock an admin out of finishing
+///    a legitimate two-step flow if they happened to be slightly clicky
+///    in the preceding minute.
+pub(crate) async fn check_callback_rate_limit(
+    bot: &Bot,
+    state: &TelegramRuntime,
+    actor: &User,
+    chat_id: i64,
+    callback: &TelegramCallback,
+    callback_query_id: &str,
+) -> Result<bool, teloxide::RequestError> {
+    if is_callback_rate_limit_exempt(callback) {
+        return Ok(true);
+    }
+
+    let actor_key = actor.telegram_id as u64;
+    if state.rate_limiter.check(actor_key) {
+        return Ok(true);
+    }
+
+    audit_rate_limit_breach(state, actor, chat_id).await;
+
+    // Toast-style answer keeps the keyboard responsive without polluting
+    // the chat with new messages.  We deliberately ignore failures here:
+    // if Telegram dropped the callback id, there's nothing useful to do.
+    if let Err(err) = bot
+        .answer_callback_query(callback_query_id)
+        .text(RATE_LIMIT_MESSAGE)
+        .show_alert(false)
+        .await
+    {
+        tracing::warn!(
+            telegram_id = actor.telegram_id,
+            error = %err,
+            "failed to deliver rate-limit toast for callback"
+        );
+    }
+    Ok(false)
+}
+
+/// Records the breach in the security audit log so ops can identify
+/// storms without needing to grep structured logs.  Shared between the
+/// message and callback rate-limit paths.
+async fn audit_rate_limit_breach(state: &TelegramRuntime, actor: &User, chat_id: i64) {
     let entry = crate::domain::audit::SecurityAuditEntry {
         id: None,
         actor_user_id: actor.id,
         telegram_id: Some(actor.telegram_id),
         event_code: crate::domain::audit::AuditActionCode::RateLimitExceeded,
         metadata: serde_json::json!({
-            "chat_id": chat_id.0,
+            "chat_id": chat_id,
         }),
         created_at: chrono::Utc::now(),
     };
@@ -390,9 +445,18 @@ pub(crate) async fn check_rate_limit(
             "failed to record rate-limit security event"
         );
     }
+}
 
-    bot.send_message(chat_id, RATE_LIMIT_MESSAGE).await?;
-    Ok(false)
+/// Returns `true` for callbacks that MUST always be processed regardless
+/// of the per-user rate-limit, because the user is not in a position to
+/// "slow down" — for instance, a destructive admin action waiting on a
+/// two-step confirmation, where the cool-off would force the operator to
+/// re-issue the entire flow.
+fn is_callback_rate_limit_exempt(callback: &TelegramCallback) -> bool {
+    matches!(
+        callback,
+        TelegramCallback::AdminConfirmNonce { .. } | TelegramCallback::AdminCancelPending
+    )
 }
 
 pub(crate) async fn handle_command(
@@ -713,5 +777,44 @@ async fn handle_new_task_command(
             .await
         }
         None => show_create_menu(bot, state, chat_id).await,
+    }
+}
+
+#[cfg(test)]
+mod rate_limit_exemption_tests {
+    use super::is_callback_rate_limit_exempt;
+    use crate::presentation::telegram::callbacks::TelegramCallback;
+
+    #[test]
+    fn given_admin_confirm_nonce_then_exempt() {
+        assert!(is_callback_rate_limit_exempt(
+            &TelegramCallback::AdminConfirmNonce {
+                nonce: "abc".to_owned(),
+            }
+        ));
+    }
+
+    #[test]
+    fn given_admin_cancel_pending_then_exempt() {
+        assert!(is_callback_rate_limit_exempt(
+            &TelegramCallback::AdminCancelPending
+        ));
+    }
+
+    #[test]
+    fn given_regular_menu_callback_then_not_exempt() {
+        assert!(!is_callback_rate_limit_exempt(&TelegramCallback::MenuHome));
+        assert!(!is_callback_rate_limit_exempt(
+            &TelegramCallback::MenuStats
+        ));
+    }
+
+    #[test]
+    fn given_admin_role_change_then_not_exempt_until_confirmation() {
+        // Preparing the change is rate-limited; only the final confirmation
+        // tap (AdminConfirmNonce) is exempt.
+        assert!(!is_callback_rate_limit_exempt(
+            &TelegramCallback::AdminUserPrepareDeactivate { user_id: 1 }
+        ));
     }
 }

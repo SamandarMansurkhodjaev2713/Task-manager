@@ -220,6 +220,14 @@ impl UserRepository for SqliteUserRepository {
         last_name: Option<&str>,
         now: DateTime<Utc>,
     ) -> AppResult<User> {
+        // Defense-in-depth (F-04): never persist whitespace-only or empty
+        // strings as a user's first/last name.  `is_onboarded()` and
+        // `display_name_object()` already guard against empties, but
+        // normalising at the write boundary keeps the database honest so
+        // future readers do not have to remember.
+        let first_name = sanitize_optional_name(first_name);
+        let last_name = sanitize_optional_name(last_name);
+
         let query = format!(
             "UPDATE users
              SET first_name = COALESCE(?, first_name),
@@ -256,7 +264,23 @@ impl UserRepository for SqliteUserRepository {
         linked_employee_id: Option<i64>,
         now: DateTime<Utc>,
     ) -> AppResult<User> {
-        let canonical_full = format!("{first_name} {last_name}");
+        // F-04: trim and reject empty/whitespace-only first/last names
+        // before they reach the DB so a downstream reader can rely on
+        // both columns being meaningful when onboarding is `Completed`.
+        let first_name = first_name.trim();
+        let last_name = last_name.trim();
+        if first_name.is_empty() {
+            return Err(AppError::schema_validation(
+                "ONBOARDING_NAME_EMPTY",
+                "first_name must be non-empty when completing onboarding",
+                serde_json::json!({ "user_id": user_id }),
+            ));
+        }
+        let canonical_full = if last_name.is_empty() {
+            first_name.to_owned()
+        } else {
+            format!("{first_name} {last_name}")
+        };
         let query = format!(
             "UPDATE users
              SET first_name = ?,
@@ -513,4 +537,53 @@ fn onboarding_conflict_error(user_id: i64, expected_version: i64) -> AppError {
             "expected_version": expected_version,
         }),
     )
+}
+
+/// Trims the candidate name and reduces an empty / whitespace-only string
+/// to `None`, so a partial onboarding update never overwrites the previous
+/// value with a blank.  See F-04 in `docs/AUDIT.md`.
+fn sanitize_optional_name(value: Option<&str>) -> Option<&str> {
+    match value {
+        Some(text) => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                // Return the original (untrimmed) reference so we don't
+                // accidentally store leading/trailing spaces.
+                Some(trimmed)
+            }
+        }
+        None => None,
+    }
+}
+
+#[cfg(test)]
+mod sanitize_tests {
+    use super::sanitize_optional_name;
+
+    #[test]
+    fn given_none_returns_none() {
+        assert!(sanitize_optional_name(None).is_none());
+    }
+
+    #[test]
+    fn given_empty_string_returns_none() {
+        assert!(sanitize_optional_name(Some("")).is_none());
+    }
+
+    #[test]
+    fn given_whitespace_only_returns_none() {
+        assert!(sanitize_optional_name(Some("   \t  ")).is_none());
+    }
+
+    #[test]
+    fn given_padded_value_returns_trimmed_slice() {
+        assert_eq!(sanitize_optional_name(Some("  Иван  ")), Some("Иван"));
+    }
+
+    #[test]
+    fn given_clean_value_returns_unchanged() {
+        assert_eq!(sanitize_optional_name(Some("Anna")), Some("Anna"));
+    }
 }

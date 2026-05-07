@@ -45,7 +45,8 @@ use self::dispatcher_guided::{
     create_task_and_present, handle_creation_session_message, SessionCompletion,
 };
 use self::dispatcher_handlers::{
-    check_rate_limit, handle_callback_action, handle_command, register_actor, RegistrationResult,
+    check_callback_rate_limit, check_rate_limit, handle_callback_action, handle_command,
+    register_actor, RegistrationResult,
 };
 use self::dispatcher_inline::handle_inline_query;
 use self::dispatcher_interactions::handle_task_interaction_message;
@@ -341,6 +342,22 @@ async fn dispatch_callback_inner(
         RegistrationResult::ConsumedByOnboarding | RegistrationResult::Aborted => return Ok(()),
         RegistrationResult::Ready(actor) => *actor,
     };
+
+    // F-05: per-user rate-limit on callback presses.  Exempts destructive
+    // admin confirmations so a slightly clicky operator does not get
+    // locked out of finishing a two-step flow.
+    if !check_callback_rate_limit(
+        bot,
+        state,
+        &actor,
+        incoming_message.chat_id,
+        &callback,
+        &callback_query.id.to_string(),
+    )
+    .await?
+    {
+        return Ok(());
+    }
 
     let screen_state = state.active_screens.get(incoming_message.chat_id).await;
     let screen_policy = callback_screen_policy(
