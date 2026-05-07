@@ -21,7 +21,7 @@ pub(crate) const SECURITY_AUDIT_COLUMNS: &str =
     "id, actor_user_id, telegram_id, event_code, metadata, created_at";
 pub(crate) const ALIAS_COLUMNS: &str = "id, employee_id, alias, created_by_user_id, created_at";
 pub(crate) const PENDING_SHEET_WRITE_COLUMNS: &str =
-    "id, employee_id, telegram_id, full_name, telegram_username, created_at, written_at, last_error, error_count";
+    "id, employee_id, telegram_id, full_name, telegram_username, created_at, written_at, last_error, error_count, next_attempt_at";
 
 pub(crate) fn bool_as_i64(value: bool) -> i64 {
     if value {

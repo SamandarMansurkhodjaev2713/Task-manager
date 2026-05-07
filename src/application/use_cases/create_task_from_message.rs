@@ -3,6 +3,7 @@ use std::time::Instant;
 
 use metrics::{counter, histogram};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use tracing::instrument;
 
 use crate::application::dto::task_views::{
@@ -11,6 +12,7 @@ use crate::application::dto::task_views::{
 };
 use crate::application::ports::repositories::{
     AuditLogRepository, NotificationRepository, PersistedTask, TaskRepository, UserRepository,
+    VoiceProcessingRepository, VoiceTransitionOutcome,
 };
 use crate::application::ports::services::{Clock, SpeechToTextService, TaskGenerator};
 use crate::application::use_cases::assignee_resolution::{
@@ -24,7 +26,12 @@ use crate::domain::notification::{Notification, NotificationDeliveryState, Notif
 use crate::domain::parsing::parse_task_request;
 use crate::domain::task::{MessageType, Task, TaskStatus};
 use crate::domain::user::{User, UserRole, DEFAULT_USER_TIMEZONE};
+use crate::domain::voice::{VoiceProcessingRecord, VoiceProcessingState};
 use crate::shared::task_codes::format_public_task_code_or_placeholder;
+
+/// Error code returned when a voice file is currently being transcribed by
+/// another concurrent request (idempotency collision).
+pub const VOICE_TRANSCRIBING_IN_PROGRESS: &str = "VOICE_TRANSCRIBING_IN_PROGRESS";
 
 pub struct CreateTaskFromMessageUseCase {
     clock: Arc<dyn Clock>,
@@ -35,6 +42,7 @@ pub struct CreateTaskFromMessageUseCase {
     task_generator: Arc<dyn TaskGenerator>,
     speech_to_text_service: Arc<dyn SpeechToTextService>,
     assignee_resolver: Arc<AssigneeResolver>,
+    voice_processing_repository: Arc<dyn VoiceProcessingRepository>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +63,7 @@ impl CreateTaskFromMessageUseCase {
         task_generator: Arc<dyn TaskGenerator>,
         speech_to_text_service: Arc<dyn SpeechToTextService>,
         assignee_resolver: Arc<AssigneeResolver>,
+        voice_processing_repository: Arc<dyn VoiceProcessingRepository>,
     ) -> Self {
         Self {
             clock,
@@ -65,6 +74,7 @@ impl CreateTaskFromMessageUseCase {
             task_generator,
             speech_to_text_service,
             assignee_resolver,
+            voice_processing_repository,
         }
     }
 
@@ -214,20 +224,182 @@ impl CreateTaskFromMessageUseCase {
             .map(|employee| employee.full_name))
     }
 
-    pub async fn transcribe_voice_message(&self, message: &IncomingMessage) -> AppResult<String> {
-        match &message.content {
-            MessageContent::Voice { voice } => self.speech_to_text_service.transcribe(voice).await,
-            _ => Err(AppError::business_rule(
+    /// Transcribes a voice message with full idempotency against the STT
+    /// provider.  The `voice_processing_records` row keyed on
+    /// `voice.file_unique_id` (Telegram's stable identifier across webhook
+    /// retries) is the synchronization point.  Behaviour by current state:
+    ///
+    /// * No row → INSERT `Queued` → CAS to `Transcribing` → call STT →
+    ///   cache transcript and CAS to `Transcribed` (or `Failed` on error).
+    /// * `Queued` (lost a CAS race) → return `VOICE_TRANSCRIBING_IN_PROGRESS`.
+    /// * `Transcribing` → return `VOICE_TRANSCRIBING_IN_PROGRESS`.
+    /// * `Transcribed` with cached text → return cached transcript directly,
+    ///   no STT call.
+    /// * `Transcribed` without cached text (e.g. cache purged) → fall back
+    ///   to a fresh STT call.  This preserves correctness if the retention
+    ///   window has expired before the second attempt arrives.
+    /// * `Failed` → bubble up the cached error code so the user gets the
+    ///   same UX without re-charging the provider.
+    ///
+    /// `user_id` is the internal database user ID when known.  It is
+    ///  recorded on the row for analytics but is not part of the
+    /// idempotency key.
+    pub async fn transcribe_voice_message(
+        &self,
+        message: &IncomingMessage,
+        user_id: Option<i64>,
+    ) -> AppResult<String> {
+        let MessageContent::Voice { voice } = &message.content else {
+            return Err(AppError::business_rule(
                 "VOICE_MESSAGE_REQUIRED",
                 "Voice transcription preview requires a voice message",
                 json!({ "message_type": message_type_label(&message.content) }),
-            )),
+            ));
+        };
+
+        // Defensive: empty file_unique_id should never happen for genuine
+        // Telegram updates, but if validation drift ever lets one through
+        // we fall back to the unguarded path so the user is not blocked.
+        if voice.file_unique_id.is_empty() {
+            tracing::warn!("voice message arrived with empty file_unique_id; bypassing dedup");
+            return self.speech_to_text_service.transcribe(voice).await;
+        }
+
+        let now = self.clock.now_utc();
+        let queued = VoiceProcessingRecord::queued(
+            voice.file_unique_id.clone(),
+            message.chat_id,
+            message.sender_id,
+            user_id,
+            now,
+        );
+
+        let record = self
+            .voice_processing_repository
+            .get_or_create_queued(&queued)
+            .await?;
+
+        match record.state {
+            VoiceProcessingState::Transcribed => {
+                if let Some(cached) = self
+                    .voice_processing_repository
+                    .fetch_cached_transcript(&voice.file_unique_id)
+                    .await?
+                {
+                    counter!("voice_transcription_cache_hits_total").increment(1);
+                    return Ok(cached);
+                }
+                // Cache purged after retention window — fall through to a
+                // fresh STT call so the user is not stuck.  We do NOT try
+                // to mutate the row here: the original `transcribed` state
+                // is sticky, and re-running the network call is acceptable.
+                counter!("voice_transcription_cache_misses_total").increment(1);
+                return self.speech_to_text_service.transcribe(voice).await;
+            }
+            VoiceProcessingState::Failed => {
+                let code = record
+                    .last_error_code
+                    .as_deref()
+                    .unwrap_or("VOICE_TRANSCRIPTION_FAILED");
+                return Err(AppError::business_rule(
+                    "VOICE_TRANSCRIPTION_CACHED_FAILURE",
+                    "Voice transcription previously failed for this file",
+                    json!({ "cached_error_code": code }),
+                ));
+            }
+            VoiceProcessingState::Transcribing => {
+                return Err(AppError::business_rule(
+                    VOICE_TRANSCRIBING_IN_PROGRESS,
+                    "Этот голосовое уже обрабатывается",
+                    json!({ "file_unique_id": voice.file_unique_id }),
+                ));
+            }
+            VoiceProcessingState::Queued => {
+                // We freshly inserted (or another worker did and is about
+                // to CAS).  Try to claim it.
+            }
+        }
+
+        let claim = self
+            .voice_processing_repository
+            .transition_state(
+                &voice.file_unique_id,
+                VoiceProcessingState::Queued,
+                VoiceProcessingState::Transcribing,
+                None,
+                now,
+            )
+            .await?;
+
+        match claim {
+            VoiceTransitionOutcome::Transitioned(_) => {}
+            VoiceTransitionOutcome::StaleExpectedState
+            | VoiceTransitionOutcome::InvalidTransition
+            | VoiceTransitionOutcome::NotFound => {
+                // Lost the race to another concurrent request — surface
+                // the standard busy error so the UI can show a friendly
+                // message.
+                return Err(AppError::business_rule(
+                    VOICE_TRANSCRIBING_IN_PROGRESS,
+                    "Этот голосовое уже обрабатывается",
+                    json!({ "file_unique_id": voice.file_unique_id }),
+                ));
+            }
+        }
+
+        // We own the Transcribing claim; perform the network call.
+        match self.speech_to_text_service.transcribe(voice).await {
+            Ok(transcript) => {
+                let preview_hash = hash_transcript_preview(&transcript);
+                let cache_now = self.clock.now_utc();
+                if let Err(error) = self
+                    .voice_processing_repository
+                    .mark_transcribed(
+                        &voice.file_unique_id,
+                        &preview_hash,
+                        Some(transcript.as_str()),
+                        cache_now,
+                    )
+                    .await
+                {
+                    // Best-effort cache: a failed write should not block the
+                    // user from getting their transcript.  We log and move on.
+                    tracing::warn!(
+                        code = error.code(),
+                        "failed to cache voice transcript; the user will get the result anyway"
+                    );
+                }
+                Ok(transcript)
+            }
+            Err(error) => {
+                let cache_now = self.clock.now_utc();
+                if let Err(record_err) = self
+                    .voice_processing_repository
+                    .transition_state(
+                        &voice.file_unique_id,
+                        VoiceProcessingState::Transcribing,
+                        VoiceProcessingState::Failed,
+                        Some(error.code()),
+                        cache_now,
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        code = record_err.code(),
+                        "failed to record voice transcription failure"
+                    );
+                }
+                Err(error)
+            }
         }
     }
 
     async fn extract_original_text(&self, message: &IncomingMessage) -> AppResult<String> {
         match &message.content {
             MessageContent::Text { text } | MessageContent::Command { text } => Ok(text.clone()),
+            // Internal path used by `execute()` after the user has already
+            // confirmed the transcript: dedup is handled by the public
+            // `transcribe_voice_message` entry point above.
             MessageContent::Voice { voice } => self.speech_to_text_service.transcribe(voice).await,
         }
     }
@@ -514,6 +686,16 @@ fn message_type_label(content: &MessageContent) -> &'static str {
         MessageContent::Voice { .. } => "voice",
         MessageContent::Command { .. } => "command",
     }
+}
+
+/// Computes the SHA-256 hex digest over the first 200 chars of the transcript.
+/// Used as the `transcript_preview_hash` so we can correlate retry attempts
+/// in logs without storing PII alongside the rest of the row's metadata.
+fn hash_transcript_preview(transcript: &str) -> String {
+    const PREVIEW_CHARS: usize = 200;
+    let preview: String = transcript.chars().take(PREVIEW_CHARS).collect();
+    let digest = Sha256::digest(preview.as_bytes());
+    format!("{digest:x}")
 }
 
 fn preview_delivery_status(resolved: &ResolvedAssignee) -> DeliveryStatus {

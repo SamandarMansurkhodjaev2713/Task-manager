@@ -135,7 +135,7 @@ async fn given_transcribing_when_mark_transcribed_then_finalises_with_preview_ha
     .expect("move to transcribing should succeed");
 
     let outcome = repo
-        .mark_transcribed("fu4", "abc123", Utc::now())
+        .mark_transcribed("fu4", "abc123", Some("recovered text"), Utc::now())
         .await
         .expect("mark_transcribed should succeed");
 
@@ -151,6 +151,53 @@ async fn given_transcribing_when_mark_transcribed_then_finalises_with_preview_ha
         }
         other => panic!("expected Transitioned, got {other:?}"),
     }
+
+    let cached = repo
+        .fetch_cached_transcript("fu4")
+        .await
+        .expect("cache fetch should succeed");
+    assert_eq!(cached.as_deref(), Some("recovered text"));
+}
+
+#[tokio::test]
+async fn given_cached_transcribed_record_when_purged_then_cache_is_cleared() {
+    let (_temp, pool) = test_pool().await;
+    let repo = SqliteVoiceProcessingRepository::new(pool);
+
+    repo.get_or_create_queued(&queued_record("fu-purge"))
+        .await
+        .expect("create should succeed");
+    repo.transition_state(
+        "fu-purge",
+        VoiceProcessingState::Queued,
+        VoiceProcessingState::Transcribing,
+        None,
+        Utc::now(),
+    )
+    .await
+    .expect("move to transcribing should succeed");
+
+    // Mark with a completed_at far in the past so a small purge cutoff
+    // sweeps it on the very first call.
+    let long_ago = Utc::now() - chrono::Duration::hours(2);
+    repo.mark_transcribed("fu-purge", "h", Some("old text"), long_ago)
+        .await
+        .expect("mark_transcribed should succeed");
+
+    let purged = repo
+        .purge_stale_payloads(Utc::now() - chrono::Duration::hours(1))
+        .await
+        .expect("purge should succeed");
+    assert!(purged >= 1, "expected at least one row purged");
+
+    let cached = repo
+        .fetch_cached_transcript("fu-purge")
+        .await
+        .expect("cache fetch should succeed");
+    assert!(
+        cached.is_none(),
+        "transcript cache must be wiped after retention window"
+    );
 }
 
 #[tokio::test]

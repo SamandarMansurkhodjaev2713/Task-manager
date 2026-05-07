@@ -315,9 +315,15 @@ pub struct SheetsSyncRow {
     pub telegram_username: Option<String>,
     pub created_at: DateTime<Utc>,
     pub error_count: u32,
+    /// Earliest UTC time at which this row may be retried.
+    ///
+    /// `None` means the row is immediately eligible (no prior failures).
+    /// Computed as `now + min(2^error_count minutes, 240 minutes)` by
+    /// `record_error` (see F-09 in the audit log).
+    pub next_attempt_at: Option<DateTime<Utc>>,
 }
 
-/// Read/write port for the `pending_sheet_writes` table (migration 016).
+/// Read/write port for the `pending_sheet_writes` table (migrations 016, 018).
 ///
 /// Rows are inserted when a user completes `/start` onboarding so their
 /// record is reflected back into the Google Sheets directory.  A background
@@ -335,15 +341,26 @@ pub trait SheetsSyncRepository: Send + Sync {
         telegram_username: Option<&str>,
     ) -> AppResult<()>;
 
-    /// Returns up to `limit` rows that have not yet been written and whose
-    /// `error_count < max_attempts`.
-    async fn list_pending(&self, max_attempts: u32, limit: i64) -> AppResult<Vec<SheetsSyncRow>>;
+    /// Returns up to `limit` rows that:
+    /// * have not yet been written (`written_at IS NULL`)
+    /// * whose `error_count < max_attempts`
+    /// * whose `next_attempt_at IS NULL OR next_attempt_at <= now`
+    ///
+    /// The `now` parameter is supplied by the caller (use `Utc::now()` in
+    /// production; inject a fixed time in tests).
+    async fn list_pending(
+        &self,
+        max_attempts: u32,
+        limit: i64,
+        now: DateTime<Utc>,
+    ) -> AppResult<Vec<SheetsSyncRow>>;
 
     /// Mark the row as successfully written to Sheets.
     async fn mark_written(&self, id: i64, now: DateTime<Utc>) -> AppResult<()>;
 
-    /// Increment `error_count` and store the latest error message.
-    async fn record_error(&self, id: i64, error: &str) -> AppResult<()>;
+    /// Increment `error_count`, store the latest error message, and set
+    /// `next_attempt_at` to `now + min(2^error_count minutes, 240 minutes)`.
+    async fn record_error(&self, id: i64, error: &str, now: DateTime<Utc>) -> AppResult<()>;
 }
 
 /// Identifies the kind of directory row that owns a set of person trigrams.
@@ -539,19 +556,29 @@ pub trait VoiceProcessingRepository: Send + Sync {
     ) -> AppResult<VoiceTransitionOutcome>;
 
     /// Records a successful transcription, including the preview hash used
-    /// to avoid echoing raw content back into logs.
+    /// to avoid echoing raw content back into logs.  When `transcript_text`
+    /// is `Some(text)`, the full transcript is cached on the row so a
+    /// duplicate webhook delivery returns the previous result instead of
+    /// re-charging the STT provider; the cached text is wiped together with
+    /// the rest of the row's payload by [`Self::purge_stale_payloads`].
     async fn mark_transcribed(
         &self,
         file_unique_id: &str,
         transcript_preview_hash: &str,
+        transcript_text: Option<&str>,
         now: chrono::DateTime<chrono::Utc>,
     ) -> AppResult<VoiceTransitionOutcome>;
 
+    /// Returns the cached transcript text for a previously-transcribed
+    /// record, or `None` when nothing has been cached (e.g. the row is
+    /// `failed`, the cache was purged, or no row exists).
+    async fn fetch_cached_transcript(&self, file_unique_id: &str) -> AppResult<Option<String>>;
+
     /// Scrubs transcript-derived payloads on records that completed
     /// more than `older_than` ago.  Keeps the row itself so retried
-    /// webhooks stay idempotent, but removes `transcript_preview_hash`
-    /// and `last_error_code` (when it contained user-facing details).
-    /// Returns the number of rows scrubbed.
+    /// webhooks stay idempotent, but removes `transcript_preview_hash`,
+    /// the cached `transcript_text`, and `last_error_code` (when it
+    /// contained user-facing details).  Returns the number of rows scrubbed.
     ///
     /// Implementations MUST be idempotent and never touch rows whose
     /// state is not terminal.

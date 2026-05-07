@@ -21,8 +21,26 @@
 //! The audit *outcome* of every admin action is persisted via the admin
 //! audit log, so a restart losing pending nonces only costs the user a
 //! re-click.  In-memory storage avoids an extra SQL round-trip and keeps
-//! the code simple; a Redis-backed implementation can be swapped in
-//! behind [`AdminNonceStore`] without touching callers.
+//! the code simple.
+//!
+//! # ⚠ Intentional limitation — single-instance only
+//!
+//! This implementation is a **known skeleton** that works correctly for the
+//! current single-process deployment (one Docker container, one Telegram
+//! polling loop).  It is *intentionally* not multi-instance safe:
+//!
+//! * Nonces live only in the heap of the issuing process.
+//! * If the service restarts or a second replica is added, nonces from the
+//!   first process are invisible to the second and will never be consumed.
+//!
+//! **Accepted risk**: a process restart invalidates any pending confirmation.
+//! The admin sees "nonce not found" and must re-issue the action — a minor
+//! UX inconvenience, not a security issue, because nonces expire in minutes.
+//!
+//! **Migration path for multi-instance**: store nonces in an `admin_action_nonces`
+//! SQLite table (or Redis) and replace [`AdminNonceStore`]'s inner store with a
+//! `dyn AdminNonceRepository` trait — no callers need to change.  Track this as
+//! technical debt item `F-03` in the audit log.
 
 use std::collections::HashMap;
 use std::num::NonZeroU32;
@@ -228,14 +246,39 @@ mod tests {
         assert_eq!(result, Err(NonceError::NotFound));
     }
 
+    /// Verify that a nonce whose `expires_at` is in the past is rejected.
+    ///
+    /// We directly backdate the entry instead of sleeping so the test is
+    /// deterministic under any CPU load and completes instantly.
     #[test]
     fn given_nonce_when_ttl_elapses_then_it_is_expired() {
-        let store = AdminNonceStore::new(NonZeroU32::new(1).unwrap());
+        let store = AdminNonceStore::new(NonZeroU32::new(60).unwrap());
         let nonce = store.issue(42, sample_action());
-        std::thread::sleep(Duration::from_millis(1_100));
+
+        // Backdate the entry so it is already expired from sweep_expired's
+        // perspective.  `Instant::now()` is monotonic; subtracting more than
+        // the system uptime would panic, so we use checked_duration_since and
+        // fall back to a tiny delta when the system has just booted.
+        {
+            let past = Instant::now()
+                .checked_sub(Duration::from_secs(120))
+                .unwrap_or_else(|| {
+                    Instant::now()
+                        .checked_sub(Duration::from_millis(1))
+                        .unwrap()
+                });
+            let mut guard = store.inner.lock().unwrap();
+            if let Some(entry) = guard.get_mut(&nonce) {
+                entry.expires_at = past;
+            }
+        }
 
         let result = store.consume(42, &nonce);
 
-        assert_eq!(result, Err(NonceError::NotFound));
+        assert_eq!(
+            result,
+            Err(NonceError::NotFound),
+            "backdated nonce must be swept as expired"
+        );
     }
 }

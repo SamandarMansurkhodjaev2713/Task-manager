@@ -192,6 +192,8 @@ pub struct PendingSheetWriteRow {
     pub written_at: Option<DateTime<Utc>>,
     pub last_error: Option<String>,
     pub error_count: i64,
+    /// Populated after migration 018; NULL means the row is immediately eligible.
+    pub next_attempt_at: Option<DateTime<Utc>>,
 }
 
 impl From<PendingSheetWriteRow> for SheetsSyncRow {
@@ -204,6 +206,7 @@ impl From<PendingSheetWriteRow> for SheetsSyncRow {
             telegram_username: row.telegram_username,
             created_at: row.created_at,
             error_count: row.error_count as u32,
+            next_attempt_at: row.next_attempt_at,
         }
     }
 }
