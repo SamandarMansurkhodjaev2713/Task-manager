@@ -1,5 +1,7 @@
 #[path = "ui_text_admin.rs"]
 mod ui_text_admin;
+#[path = "ui_text_help.rs"]
+mod ui_text_help;
 #[path = "ui_text_lists.rs"]
 mod ui_text_lists;
 #[path = "ui_text_menu.rs"]
@@ -14,10 +16,13 @@ pub use ui_text_admin::{
     admin_reactivated_text, admin_role_changed_text, admin_security_audit_text,
     admin_self_target_text, admin_user_details_text, admin_user_not_found_text, admin_users_text,
 };
+pub use ui_text_help::{
+    help_overview_text, help_section_forbidden_text, help_section_text, help_section_title,
+};
 pub use ui_text_lists::{list_header, list_text, task_creation_text};
 pub use ui_text_menu::{
     create_menu_text, guided_assignee_clarification_text, guided_assignee_prompt,
-    guided_confirmation_text, guided_deadline_prompt, guided_description_prompt, help_text,
+    guided_confirmation_text, guided_deadline_prompt, guided_description_prompt,
     onboarding_ask_last_name_text, onboarding_completed_text, onboarding_link_expected_text,
     onboarding_retry_first_name_text, onboarding_retry_last_name_text, onboarding_too_long_text,
     onboarding_welcome_text, quick_create_prompt, registration_link_text, settings_text,

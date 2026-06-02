@@ -6,7 +6,7 @@ use crate::application::use_cases::collect_stats::StatsScope;
 use crate::application::use_cases::list_tasks::TaskListScope;
 use crate::domain::user::User;
 use crate::presentation::telegram::active_screens::ScreenDescriptor;
-use crate::presentation::telegram::callbacks::TaskListOrigin;
+use crate::presentation::telegram::callbacks::{HelpSection, TaskListOrigin};
 use crate::presentation::telegram::ui;
 
 use super::dispatcher_transport::{send_error, send_fresh_screen, send_screen};
@@ -54,6 +54,12 @@ pub(crate) async fn show_main_menu_fresh(
     .await
 }
 
+/// Корневой экран `/help`: краткое приветствие + клавиатура подразделов,
+/// фильтрованная под роль актора.
+///
+/// Сам текст overview не перечисляет подразделы — это сделают кнопки.  Так мы
+/// избегаем дублирования и упрощаем поддержку: добавление нового подраздела
+/// не требует править текст приветствия.
 pub(crate) async fn show_help(
     bot: &Bot,
     state: &TelegramRuntime,
@@ -65,8 +71,51 @@ pub(crate) async fn show_help(
         state,
         chat_id,
         ScreenDescriptor::Help,
-        &ui::help_text(),
-        ui::main_menu_keyboard(actor),
+        &ui::help_overview_text(actor),
+        ui::help_overview_keyboard(actor),
+    )
+    .await
+}
+
+/// Открывает конкретный подраздел справки.  Вторая линия защиты: даже если
+/// keyboard каким-то образом отрендерил кнопку для запретного раздела (или
+/// callback пришёл от старого сообщения после демоута роли), мы перерисовываем
+/// overview с понятным сообщением, не падая в `unauthorized`.
+pub(crate) async fn show_help_section(
+    bot: &Bot,
+    state: &TelegramRuntime,
+    chat_id: ChatId,
+    actor: &User,
+    section: HelpSection,
+) -> Result<(), teloxide::RequestError> {
+    if !section.is_visible_to(actor.role) {
+        // Логируем для security-аудита: попытка доступа к более привилегированному
+        // разделу справки — обычно симптом стейл-callback'а после демоута, реже —
+        // ручной подмены payload.
+        tracing::warn!(
+            actor_id = ?actor.id,
+            actor_role = ?actor.role,
+            section = ?section,
+            "help section access denied: role does not satisfy visibility predicate",
+        );
+        return send_screen(
+            bot,
+            state,
+            chat_id,
+            ScreenDescriptor::Help,
+            &ui::help_section_forbidden_text(section),
+            ui::help_overview_keyboard(actor),
+        )
+        .await;
+    }
+
+    send_screen(
+        bot,
+        state,
+        chat_id,
+        ScreenDescriptor::HelpSection { section },
+        ui::help_section_text(section),
+        ui::help_section_keyboard(),
     )
     .await
 }
@@ -202,6 +251,16 @@ pub(crate) async fn sync_employees(
 
     match state.sync_employees_use_case.execute().await {
         Ok(count) => {
+            if let Err(error) = state
+                .register_user_use_case
+                .reconcile_existing_directory_links()
+                .await
+            {
+                tracing::warn!(
+                    code = error.code(),
+                    "employee sync completed but user link reconciliation failed"
+                );
+            }
             send_screen(
                 bot,
                 state,

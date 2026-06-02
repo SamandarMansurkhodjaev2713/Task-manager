@@ -87,14 +87,15 @@ mod dispatcher_voice;
 
 pub(crate) const CALLBACK_OK_TEXT: &str = "Готово";
 pub(crate) const STALE_MUTATION_CALLBACK_TEXT: &str =
-    "Этот экран уже устарел. Откройте актуальную карточку или список.";
+    "Этот экран уже устарел. Откройте актуальную карточку или список и повторите действие.";
 pub(crate) const STALE_NAVIGATION_CALLBACK_TEXT: &str = "Открываю актуальный экран.";
 pub(crate) const RATE_LIMIT_MESSAGE: &str =
-    "Слишком много запросов подряд. Подождите немного и попробуйте снова.";
+    "Слишком много действий за короткое время. Подождите немного и попробуйте снова.";
 pub(crate) const GUIDED_TEXT_REQUIRED_MESSAGE: &str =
-    "На этом шаге нужен текст. Для голосовых удобнее использовать быстрый режим.";
+    "На этом шаге нужен текст. Для голосовых удобнее быстрый режим — выйдите в меню \
+     и выберите «🆕 Создать задачу» → «⚡ Быстрый режим».";
 pub(crate) const GUIDED_DESCRIPTION_REQUIRED_MESSAGE: &str =
-    "Сначала добавьте описание задачи, потом я смогу её создать.";
+    "Сначала добавьте описание задачи — потом я смогу её создать.";
 pub(crate) const GUIDED_SYNTHETIC_MESSAGE_ID: i32 = 0;
 pub(crate) const GUIDED_FALLBACK_NAME: &str = "Пользователь";
 

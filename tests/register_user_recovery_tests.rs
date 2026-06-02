@@ -10,6 +10,7 @@ use telegram_task_bot::domain::audit::AuditAction;
 use telegram_task_bot::domain::message::{IncomingMessage, MessageContent};
 use telegram_task_bot::domain::notification::{NotificationDeliveryState, NotificationType};
 use telegram_task_bot::domain::task::TaskStatus;
+use telegram_task_bot::domain::user::OnboardingState;
 use telegram_task_bot::infrastructure::clock::system_clock::SystemClock;
 use telegram_task_bot::infrastructure::db::pool::connect;
 use telegram_task_bot::infrastructure::db::repositories::{
@@ -160,6 +161,135 @@ async fn given_same_employee_registers_twice_when_recovery_repeats_then_it_remai
     );
 }
 
+#[tokio::test]
+async fn given_completed_unlinked_user_when_start_retried_then_links_by_stored_name_and_recovers_tasks(
+) {
+    let (_temp_dir, pool) = test_pool().await;
+    seed_creator_and_employee(&pool).await;
+    seed_completed_unlinked_user_with_short_display(&pool).await;
+
+    let task_repository = Arc::new(SqliteTaskRepository::new(pool.clone()));
+    let notification_repository = Arc::new(SqliteNotificationRepository::new(pool.clone()));
+    let audit_log_repository = Arc::new(SqliteAuditLogRepository::new(pool.clone()));
+    let use_case = RegisterUserUseCase::new(
+        Arc::new(SystemClock),
+        Arc::new(SqliteUserRepository::new(pool.clone())),
+        Arc::new(SqliteEmployeeRepository::new(pool.clone())),
+        task_repository.clone(),
+        notification_repository.clone(),
+        audit_log_repository,
+    );
+
+    let mut task = factories::task(None);
+    task.assigned_to_user_id = None;
+    task.assigned_to_employee_id = Some(1);
+    task.status = TaskStatus::Created;
+    let task = match task_repository
+        .create_if_absent(&task)
+        .await
+        .expect("task should be created")
+    {
+        telegram_task_bot::application::ports::repositories::PersistedTask::Created(task) => task,
+        telegram_task_bot::application::ports::repositories::PersistedTask::Existing(_) => {
+            panic!("expected a newly created task")
+        }
+    };
+
+    let actor = use_case
+        .execute(&registration_message_with_mismatched_username())
+        .await
+        .expect("explicit /start should retry linking by stored onboarding name");
+    let actor_id = actor.id.expect("registered user should have id");
+    let task_id = task.id.expect("task should have id");
+
+    let linked_task = task_repository
+        .find_by_uid(task.task_uid)
+        .await
+        .expect("task lookup should succeed")
+        .expect("task should still exist");
+    let notification = notification_repository
+        .find_latest_for_task_and_recipient(task_id, actor_id, NotificationType::TaskAssigned)
+        .await
+        .expect("notification lookup should succeed")
+        .expect("assignment notification should exist");
+
+    assert_eq!(actor.linked_employee_id, Some(1));
+    assert_eq!(actor.full_name.as_deref(), Some("Jean Dupont"));
+    assert_eq!(linked_task.assigned_to_user_id, Some(actor_id));
+    assert_eq!(
+        notification.delivery_state,
+        NotificationDeliveryState::Pending
+    );
+}
+
+#[tokio::test]
+async fn given_completed_unlinked_user_when_directory_sync_reconciles_then_tasks_are_delivered() {
+    let (_temp_dir, pool) = test_pool().await;
+    seed_creator_and_employee(&pool).await;
+    seed_completed_unlinked_user_matching_employee_username(&pool).await;
+
+    let task_repository = Arc::new(SqliteTaskRepository::new(pool.clone()));
+    let notification_repository = Arc::new(SqliteNotificationRepository::new(pool.clone()));
+    let audit_log_repository = Arc::new(SqliteAuditLogRepository::new(pool.clone()));
+    let use_case = RegisterUserUseCase::new(
+        Arc::new(SystemClock),
+        Arc::new(SqliteUserRepository::new(pool.clone())),
+        Arc::new(SqliteEmployeeRepository::new(pool.clone())),
+        task_repository.clone(),
+        notification_repository.clone(),
+        audit_log_repository,
+    );
+
+    let mut task = factories::task(None);
+    task.assigned_to_user_id = None;
+    task.assigned_to_employee_id = Some(1);
+    task.status = TaskStatus::Created;
+    let task = match task_repository
+        .create_if_absent(&task)
+        .await
+        .expect("task should be created")
+    {
+        telegram_task_bot::application::ports::repositories::PersistedTask::Created(task) => task,
+        telegram_task_bot::application::ports::repositories::PersistedTask::Existing(_) => {
+            panic!("expected a newly created task")
+        }
+    };
+
+    let reconciled = use_case
+        .reconcile_existing_directory_links()
+        .await
+        .expect("directory reconciliation should succeed");
+    let actor_id: i64 = sqlx::query_scalar("SELECT id FROM users WHERE telegram_id = 4242")
+        .fetch_one(&pool)
+        .await
+        .expect("user id should load");
+    let linked_employee_id: Option<i64> =
+        sqlx::query_scalar("SELECT linked_employee_id FROM users WHERE id = ?")
+            .bind(actor_id)
+            .fetch_one(&pool)
+            .await
+            .expect("link should load");
+    let task_id = task.id.expect("task should have id");
+    let linked_task = task_repository
+        .find_by_uid(task.task_uid)
+        .await
+        .expect("task lookup should succeed")
+        .expect("task should exist");
+    let notification = notification_repository
+        .find_latest_for_task_and_recipient(task_id, actor_id, NotificationType::TaskAssigned)
+        .await
+        .expect("notification lookup should succeed")
+        .expect("assignment notification should exist");
+
+    assert_eq!(reconciled, 1);
+    assert_eq!(linked_employee_id, Some(1));
+    assert_eq!(linked_task.assigned_to_user_id, Some(actor_id));
+    assert_eq!(
+        notification.delivery_state,
+        NotificationDeliveryState::Pending
+    );
+}
+
 async fn test_pool() -> (TempDir, sqlx::SqlitePool) {
     let temp_dir = tempdir().expect("temp dir should be created");
     let db_path = temp_dir.path().join("register-user.db");
@@ -181,6 +311,45 @@ async fn seed_creator_and_employee(pool: &sqlx::SqlitePool) {
         .expect("employee should be seeded");
 }
 
+async fn seed_completed_unlinked_user_with_short_display(pool: &sqlx::SqlitePool) {
+    sqlx::query(
+        "INSERT INTO users
+            (telegram_id, telegram_username, full_name, first_name, last_name, is_employee, onboarding_state, onboarding_version)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(4242_i64)
+    .bind("actual_username")
+    .bind("J")
+    .bind("Jean")
+    .bind("Dupont")
+    .bind(0_i64)
+    .bind(OnboardingState::Completed.as_storage_value())
+    .bind(3_i64)
+    .execute(pool)
+    .await
+    .expect("completed unlinked user should be seeded");
+}
+
+async fn seed_completed_unlinked_user_matching_employee_username(pool: &sqlx::SqlitePool) {
+    sqlx::query(
+        "INSERT INTO users
+            (telegram_id, telegram_username, full_name, first_name, last_name, is_employee, onboarding_state, onboarding_version, last_chat_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(4242_i64)
+    .bind("jean_dupont")
+    .bind("J")
+    .bind("Jean")
+    .bind("Dupont")
+    .bind(0_i64)
+    .bind(OnboardingState::Completed.as_storage_value())
+    .bind(3_i64)
+    .bind(4242_i64)
+    .execute(pool)
+    .await
+    .expect("completed unlinked user should be seeded");
+}
+
 fn registration_message() -> IncomingMessage {
     IncomingMessage {
         chat_id: 777,
@@ -188,6 +357,22 @@ fn registration_message() -> IncomingMessage {
         sender_id: 4242,
         sender_name: "Jean Dupont".to_owned(),
         sender_username: Some("jean_dupont".to_owned()),
+        content: MessageContent::Command {
+            text: "/start".to_owned(),
+        },
+        timestamp: chrono::Utc::now(),
+        source_message_key_override: None,
+        is_voice_origin: false,
+    }
+}
+
+fn registration_message_with_mismatched_username() -> IncomingMessage {
+    IncomingMessage {
+        chat_id: 777,
+        message_id: 2,
+        sender_id: 4242,
+        sender_name: "J".to_owned(),
+        sender_username: Some("actual_username".to_owned()),
         content: MessageContent::Command {
             text: "/start".to_owned(),
         },

@@ -231,6 +231,16 @@ pub(crate) async fn execute_admin_confirmation(
 
     match result {
         Ok(ExecutionOutcome::RoleChanged(user)) => {
+            // Refresh the target user's command menu so their "/" shortcut
+            // immediately reflects the new role.  Best-effort — swallowed inside
+            // register_user_commands.
+            crate::presentation::telegram::bot_commands::register_user_commands(
+                bot,
+                user.telegram_id,
+                user.role,
+            )
+            .await;
+
             send_screen(
                 bot,
                 state,
@@ -276,9 +286,14 @@ pub(crate) async fn execute_admin_confirmation(
 pub(crate) async fn cancel_admin_pending(
     bot: &Bot,
     state: &TelegramRuntime,
-    actor: &User,
+    _actor: &User,
     chat_id: ChatId,
 ) -> Result<(), teloxide::RequestError> {
+    // Show cancel confirmation together with the admin-menu keyboard so the
+    // admin can immediately navigate further.  The UX barrier allows exactly
+    // one outbound render per update, so a second `show_admin_menu` call here
+    // would be suppressed; the cancel message + menu buttons is the complete
+    // final state of this update.
     send_screen(
         bot,
         state,
@@ -287,8 +302,7 @@ pub(crate) async fn cancel_admin_pending(
         &ui::admin_action_cancelled_text(),
         ui::admin_menu_keyboard(),
     )
-    .await?;
-    show_admin_menu(bot, state, actor, chat_id).await
+    .await
 }
 
 pub(crate) async fn show_admin_audit(

@@ -145,6 +145,16 @@ async fn announce_completion(
         }
     }
 
+    // Register per-user bot command menu so the "/" shortcut immediately shows
+    // the correct commands for this user's role.  Best-effort — any Telegram
+    // API error is swallowed inside register_user_commands.
+    crate::presentation::telegram::bot_commands::register_user_commands(
+        bot,
+        actor.telegram_id,
+        actor.role,
+    )
+    .await;
+
     // Must use the same transport as other onboarding screens so the per-update
     // UX barrier is consumed.  A raw `send_message` left the barrier unspent so
     // a follow-up `send_error` on the same update could still fire — the

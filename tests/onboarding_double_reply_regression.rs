@@ -223,6 +223,44 @@ async fn given_completed_user_when_text_re_submitted_then_onboarding_is_idempote
     );
 }
 
+#[tokio::test]
+async fn given_completed_unlinked_user_when_start_retried_then_onboarding_links_by_saved_name() {
+    let (_tmp, pool) = test_pool().await;
+    seed_employee_and_unlinked_user(&pool).await;
+
+    let user_repository = Arc::new(SqliteUserRepository::new(pool.clone()));
+    let employee_repository = Arc::new(SqliteEmployeeRepository::new(pool.clone()));
+    let task_repository = Arc::new(SqliteTaskRepository::new(pool.clone()));
+    let notification_repository = Arc::new(SqliteNotificationRepository::new(pool.clone()));
+    let audit_log_repository = Arc::new(SqliteAuditLogRepository::new(pool.clone()));
+
+    let register_user_use_case = Arc::new(RegisterUserUseCase::new(
+        Arc::new(SystemClock),
+        user_repository.clone(),
+        employee_repository.clone(),
+        task_repository,
+        notification_repository,
+        audit_log_repository,
+    ));
+    let onboarding_use_case =
+        OnboardingUseCase::new(user_repository, employee_repository, register_user_use_case);
+
+    let start_message = new_message("/start");
+    let ctx = anonymous_ctx(&start_message);
+    let outcome = onboarding_use_case
+        .handle_start(&ctx, &start_message)
+        .await
+        .expect("completed unlinked user should retry employee linking on /start");
+
+    let completed_user = match outcome {
+        OnboardingOutcome::Completed { user } => user,
+        other => panic!("expected completed relink outcome, got {other:?}"),
+    };
+
+    assert_eq!(completed_user.linked_employee_id, Some(1));
+    assert_eq!(completed_user.full_name.as_deref(), Some("Jean Dupont"));
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────
 
 async fn test_pool() -> (TempDir, sqlx::SqlitePool) {
@@ -233,6 +271,33 @@ async fn test_pool() -> (TempDir, sqlx::SqlitePool) {
         .await
         .expect("database should connect");
     (dir, pool)
+}
+
+async fn seed_employee_and_unlinked_user(pool: &sqlx::SqlitePool) {
+    sqlx::query(
+        "INSERT INTO employees (id, full_name, telegram_username)
+         VALUES (1, 'Jean Dupont', 'directory_username')",
+    )
+    .execute(pool)
+    .await
+    .expect("employee should be seeded");
+
+    sqlx::query(
+        "INSERT INTO users
+            (telegram_id, telegram_username, full_name, first_name, last_name, is_employee, onboarding_state, onboarding_version)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(100500_i64)
+    .bind("killallofthem")
+    .bind("J")
+    .bind("Jean")
+    .bind("Dupont")
+    .bind(0_i64)
+    .bind(OnboardingState::Completed.as_storage_value())
+    .bind(3_i64)
+    .execute(pool)
+    .await
+    .expect("completed unlinked user should be seeded");
 }
 
 fn new_message(payload: &str) -> IncomingMessage {

@@ -67,23 +67,62 @@ pub async fn run_application(config: AppConfig) -> AppResult<()> {
     let user_repository = Arc::new(SqliteUserRepository::new(pool.clone()));
     let employee_repository = Arc::new(SqliteEmployeeRepository::new(pool.clone()));
 
-    // ── One-shot employee reset ──────────────────────────────────────────
+    // ── One-shot employee reset (idempotency-guarded) ───────────────────
     // When the operator sets `RESET_EMPLOYEES_ON_STARTUP=true`, wipe the
     // employee directory before doing anything else.  This must run BEFORE
     // the initial Sheets/CSV sync below so we don't immediately re-import
     // the data we are trying to clear.
+    //
+    // **Idempotency guard**: we record the calendar date of each wipe in the
+    // `idempotency_keys` table.  Subsequent restarts on the same day — e.g.
+    // after a crash-loop — skip the wipe even when the flag is still `true`.
+    // This prevents the "forgot to unset the flag → restart → full wipe" foot-
+    // gun that has cost operators their employee directories.  The flag becomes
+    // effective again on the next calendar day.
     if config.bot.reset_employees_on_startup {
-        match EmployeeRepository::reset_all(employee_repository.as_ref()).await {
-            Ok(deleted) => tracing::warn!(
-                deleted,
-                "RESET_EMPLOYEES_ON_STARTUP=true: employee directory wiped clean. \
-                 Set the flag back to false to avoid wiping on the next restart."
-            ),
-            Err(error) => {
-                let code = error.code();
+        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        let idempotency_result = sqlx::query(
+            "INSERT OR IGNORE INTO idempotency_keys (use_case, key, created_at) \
+             VALUES ('system:reset_employees', ?, CURRENT_TIMESTAMP)",
+        )
+        .bind(&today)
+        .execute(&pool)
+        .await;
+
+        match idempotency_result {
+            Ok(result) if result.rows_affected() == 0 => {
+                // Row already existed → we already wiped today. Skip.
+                tracing::warn!(
+                    date = today,
+                    "RESET_EMPLOYEES_ON_STARTUP=true but wipe was already performed today; \
+                     skipping to avoid data loss on restart. \
+                     Set the flag back to false when the directory is correct."
+                );
+            }
+            Ok(_) => {
+                // New row inserted → first wipe of the day; proceed.
+                match EmployeeRepository::reset_all(employee_repository.as_ref()).await {
+                    Ok(deleted) => tracing::warn!(
+                        deleted,
+                        date = today,
+                        "RESET_EMPLOYEES_ON_STARTUP=true: employee directory wiped clean. \
+                         Set the flag back to false to avoid wiping again tomorrow."
+                    ),
+                    Err(error) => {
+                        let code = error.code();
+                        tracing::error!(
+                            code,
+                            "RESET_EMPLOYEES_ON_STARTUP=true but the wipe failed; \
+                             continuing with the existing data"
+                        );
+                    }
+                }
+            }
+            Err(db_err) => {
                 tracing::error!(
-                    code,
-                    "RESET_EMPLOYEES_ON_STARTUP=true but the wipe failed; continuing with the existing data"
+                    error = %db_err,
+                    "RESET_EMPLOYEES_ON_STARTUP=true but idempotency check failed; \
+                     skipping wipe to be safe"
                 );
             }
         }
@@ -291,6 +330,20 @@ pub async fn run_application(config: AppConfig) -> AppResult<()> {
             "initial employee sync failed; background scheduler will retry"
         ),
     }
+    match register_user_use_case
+        .reconcile_existing_directory_links()
+        .await
+    {
+        Ok(count) if count > 0 => tracing::info!(
+            count,
+            "existing registered users linked after employee directory sync"
+        ),
+        Ok(_) => {}
+        Err(error) => tracing::warn!(
+            code = error.code(),
+            "existing user link reconciliation failed after employee directory sync"
+        ),
+    }
 
     // Phase 2: seed Russian diminutive aliases (idempotent). Runs best-effort:
     // failure logs a warning but does not abort startup.
@@ -340,12 +393,14 @@ pub async fn run_application(config: AppConfig) -> AppResult<()> {
         config.scheduler.clone(),
         BackgroundJobUseCases {
             sync_employees: sync_employees_use_case.clone(),
+            register_user: register_user_use_case.clone(),
             process_notifications: process_notifications_use_case.clone(),
             enqueue_task_reminders: enqueue_task_reminders_use_case,
             enqueue_daily_summaries: enqueue_daily_summaries_use_case,
             update_sla_states: update_sla_states_use_case,
             process_recurrence_rules: process_recurrence_rules_use_case,
             sheets_write_back: sheets_write_back.clone(),
+            db_pool: pool.clone(),
         },
     );
     let http_server = spawn_http_server(config.http_server.clone(), metrics_handle, pool.clone());
@@ -382,6 +437,14 @@ pub async fn run_application(config: AppConfig) -> AppResult<()> {
             std::collections::HashMap::new(),
         )),
     };
+    // Register the default bot command menu before starting the dispatcher.
+    // This is best-effort — failure is logged but never propagated so the bot
+    // starts even if Telegram's setMyCommands endpoint is temporarily slow.
+    crate::presentation::telegram::bot_commands::register_default_commands(
+        &telegram_runtime.notifier.bot(),
+    )
+    .await;
+
     let telegram_handle = tokio::spawn(run_telegram_dispatcher(telegram_runtime));
 
     let shutdown_result = tokio::select! {

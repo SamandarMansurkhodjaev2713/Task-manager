@@ -26,13 +26,17 @@ fn employee(full_name: &str, username: Option<&str>) -> Employee {
 }
 
 async fn setup_repo() -> SqliteEmployeeRepository {
+    setup_repo_with_pool().await.0
+}
+
+async fn setup_repo_with_pool() -> (SqliteEmployeeRepository, sqlx::SqlitePool) {
     let temp_dir = tempdir().expect("temp dir");
     let db_path = temp_dir.path().join("employees_test.db");
     // leak the tempdir so the file outlives the test
     std::mem::forget(temp_dir);
     let url = format!("sqlite://{}", db_path.to_string_lossy().replace('\\', "/"));
     let pool = connect(&url).await.expect("pool");
-    SqliteEmployeeRepository::new(pool)
+    (SqliteEmployeeRepository::new(pool.clone()), pool)
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -84,6 +88,74 @@ async fn given_employee_with_username_when_upserted_twice_then_single_row_update
         .collect();
     assert_eq!(petrova.len(), 1, "must not create duplicate on re-upsert");
     assert_eq!(petrova[0].department.as_deref(), Some("Engineering"));
+}
+
+/// If a directory row keeps the same unique full name but its Telegram username
+/// changes, the sync must update the existing employee row. Otherwise pending
+/// tasks stay attached to a stale username and never reach the real Telegram user.
+#[tokio::test]
+async fn given_unique_employee_name_when_username_changes_then_existing_row_is_updated() {
+    let repo = setup_repo().await;
+
+    repo.upsert_many(&[employee("Jean Dupont", Some("old_username"))])
+        .await
+        .expect("first sync");
+    repo.upsert_many(&[employee("Jean Dupont", Some("new_username"))])
+        .await
+        .expect("second sync");
+
+    let active = repo.list_active().await.expect("list");
+    let rows: Vec<_> = active
+        .iter()
+        .filter(|employee| employee.full_name == "Jean Dupont")
+        .collect();
+
+    assert_eq!(
+        rows.len(),
+        1,
+        "unique same-name sync must not duplicate rows"
+    );
+    assert_eq!(rows[0].telegram_username.as_deref(), Some("new_username"));
+}
+
+/// If an older buggy sync already left duplicate rows for the same unique
+/// directory person, the next authoritative sync should converge them back to
+/// one row and preserve user links.
+#[tokio::test]
+async fn given_stale_duplicate_same_name_rows_when_sync_runs_then_rows_are_merged() {
+    let (repo, pool) = setup_repo_with_pool().await;
+
+    sqlx::query(
+        "INSERT INTO employees (id, full_name, telegram_username)
+         VALUES (10, 'Jean Dupont', 'old_username'),
+                (11, 'Jean Dupont', 'new_username')",
+    )
+    .execute(&pool)
+    .await
+    .expect("stale employees should be seeded");
+    sqlx::query("INSERT INTO users (telegram_id, linked_employee_id) VALUES (700, 10)")
+        .execute(&pool)
+        .await
+        .expect("linked user should be seeded");
+
+    repo.upsert_many(&[employee("Jean Dupont", Some("new_username"))])
+        .await
+        .expect("sync should merge stale duplicate rows");
+
+    let active = repo.list_active().await.expect("list");
+    let rows: Vec<_> = active
+        .iter()
+        .filter(|employee| employee.full_name == "Jean Dupont")
+        .collect();
+    let linked_employee_id: i64 =
+        sqlx::query_scalar("SELECT linked_employee_id FROM users WHERE telegram_id = 700")
+            .fetch_one(&pool)
+            .await
+            .expect("user link should load");
+
+    assert_eq!(rows.len(), 1, "stale duplicate rows must converge");
+    assert_eq!(rows[0].id, Some(11));
+    assert_eq!(linked_employee_id, 11);
 }
 
 /// Employees without a username are matched by full_name among null-username

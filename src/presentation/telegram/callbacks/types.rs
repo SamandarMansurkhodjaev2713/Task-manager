@@ -25,10 +25,77 @@ pub enum DraftEditField {
     Deadline,
 }
 
+/// Подразделы справки.  Каждый подраздел независим и имеет собственный
+/// текст; видимость отдельных подразделов определяется ролью актора
+/// (см. [`HelpSection::is_visible_to`]).
+///
+/// Overview (корневой экран `/help`) сюда **не входит** — это отдельный
+/// callback [`TelegramCallback::MenuHelp`], чтобы не путать «корневой экран»
+/// и «конкретный раздел».
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HelpSection {
+    /// Создание и жизненный цикл задач — статусы, переназначения, комментарии.
+    Tasks,
+    /// Голосовое создание задач — что бот понимает, как править расшифровку.
+    Voice,
+    /// Уведомления, тихие часы, ежедневный дайджест, напоминания о сроках.
+    Notifications,
+    /// Возможности менеджера: командные задачи, статистика, override статусов.
+    /// Виден только пользователям с ролью Manager или Admin.
+    Manager,
+    /// Возможности администратора: панель, роли, флаги, журналы, бэкапы.
+    /// Виден только пользователям с ролью Admin.
+    Admin,
+}
+
+impl HelpSection {
+    /// Стабильный короткий код для callback-payload.  Меняем только синхронно
+    /// с миграцией — старые сообщения с этим кодом могут жить в чатах сутками.
+    pub fn as_code(self) -> &'static str {
+        match self {
+            Self::Tasks => "tasks",
+            Self::Voice => "voice",
+            Self::Notifications => "notif",
+            Self::Manager => "mgr",
+            Self::Admin => "adm",
+        }
+    }
+
+    pub fn from_code(value: &str) -> Option<Self> {
+        match value {
+            "tasks" => Some(Self::Tasks),
+            "voice" => Some(Self::Voice),
+            "notif" => Some(Self::Notifications),
+            "mgr" => Some(Self::Manager),
+            "adm" => Some(Self::Admin),
+            _ => None,
+        }
+    }
+
+    /// Проверка видимости раздела для конкретной роли.  Универсальные разделы
+    /// (Tasks, Voice, Notifications) видят все; Manager — Manager + Admin;
+    /// Admin — только Admin.  Используется И при сборке клавиатуры (чтобы
+    /// кнопка не появлялась), И при обработке callback'а (defence-in-depth
+    /// на случай гонки «роль демоутнули между рендером и нажатием»).
+    pub fn is_visible_to(self, role: crate::domain::user::UserRole) -> bool {
+        use crate::domain::user::UserRole;
+        match self {
+            Self::Tasks | Self::Voice | Self::Notifications => true,
+            Self::Manager => matches!(role, UserRole::Manager | UserRole::Admin),
+            Self::Admin => matches!(role, UserRole::Admin),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TelegramCallback {
     MenuHome,
     MenuHelp,
+    /// Открыть конкретный подраздел справки.  Корневой help-экран остаётся
+    /// под `MenuHelp` — этот вариант обслуживает только sub-pages.
+    MenuHelpSection {
+        section: HelpSection,
+    },
     MenuSettings,
     MenuStats,
     MenuTeamStats,

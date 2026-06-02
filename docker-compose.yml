@@ -1,9 +1,12 @@
 # Set `GIT_SHA` when building so `/version` matches the deployed revision, e.g.
 #   $env:GIT_SHA = (git rev-parse HEAD); docker compose build
 #
-# Phase 2 optional features (add to .env to activate):
+# Optional features (add to .env to activate):
 #   GOOGLE_SHEETS_WRITE_BACK_RANGE=Employees!A:G   # append bot-registered users back to the sheet
 #   GOOGLE_SHEETS_BEARER_TOKEN=<oauth_token>        # required for write-back (read-only API key is not sufficient)
+#   SQLITE_BACKUP_DIR=/app/data/backups             # enable scheduled VACUUM INTO hot-backups inside the data volume
+#   SQLITE_BACKUP_INTERVAL_HOURS=6                  # backup cadence (default: 6 h)
+#   SQLITE_BACKUP_MAX_FILES=14                      # rolling window kept on disk (default: 14 files ≈ 3.5 days)
 services:
   telegram-task-bot:
     build:

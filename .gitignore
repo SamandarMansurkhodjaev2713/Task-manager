@@ -3,3 +3,5 @@
 /data/
 /target/
 **/*.rs.bk
+.codex/
+app-debug*.db

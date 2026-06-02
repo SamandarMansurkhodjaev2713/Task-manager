@@ -10,7 +10,7 @@ use crate::application::dto::task_views::{
 use crate::domain::user::{User, UserRole};
 use crate::presentation::telegram::admin_nonce_store::PendingAdminAction;
 use crate::presentation::telegram::callbacks::{
-    action_to_status, encode_callback, AdminRoleOption, DraftEditField, TaskCardMode,
+    action_to_status, encode_callback, AdminRoleOption, DraftEditField, HelpSection, TaskCardMode,
     TaskListOrigin, TelegramCallback,
 };
 
@@ -61,13 +61,71 @@ pub fn main_menu_keyboard(actor: &User) -> InlineKeyboardMarkup {
     }
 
     if actor.role.is_admin() {
-        rows.push(vec![button(
-            "🔄 Синхронизировать сотрудников",
-            TelegramCallback::MenuSyncEmployees,
-        )]);
+        // Группируем admin-функции на одной строке: вход в панель — слева
+        // (главный action), быстрая синхронизация справочника — справа.
+        // Так администратор сразу видит точку входа в админ-инструменты,
+        // не вспоминая команду /admin.
+        rows.push(vec![
+            button("🛡 Панель администратора", TelegramCallback::AdminMenu),
+            button("🔄 Синхронизировать", TelegramCallback::MenuSyncEmployees),
+        ]);
     }
 
     InlineKeyboardMarkup::new(rows)
+}
+
+/// Корневая клавиатура `/help` — список подразделов, видимых актору.
+///
+/// Универсальные разделы (Задачи, Голосовое создание, Уведомления) показываются
+/// всегда; раздел «Для менеджера» — только Manager и Admin; «Для администратора»
+/// — только Admin.  Видимость дублирует [`HelpSection::is_visible_to`], чтобы
+/// rendering и handler-side проверка опирались на единый источник правды.
+pub fn help_overview_keyboard(actor: &User) -> InlineKeyboardMarkup {
+    let mut rows: Vec<Vec<InlineKeyboardButton>> = Vec::new();
+
+    // Универсальные подразделы — две на строку, чтобы экономить вертикальное место.
+    rows.push(vec![
+        help_section_button(HelpSection::Tasks, "📋 Задачи"),
+        help_section_button(HelpSection::Voice, "🎤 Голосовое создание"),
+    ]);
+    rows.push(vec![help_section_button(
+        HelpSection::Notifications,
+        "🔔 Уведомления",
+    )]);
+
+    // Расширенные подразделы: каждый на отдельной строке, чтобы визуально
+    // подчёркивать их элевацию и не путать с обычным набором.
+    if HelpSection::Manager.is_visible_to(actor.role) {
+        rows.push(vec![help_section_button(
+            HelpSection::Manager,
+            "🧭 Для менеджера",
+        )]);
+    }
+    if HelpSection::Admin.is_visible_to(actor.role) {
+        rows.push(vec![help_section_button(
+            HelpSection::Admin,
+            "🛡 Для администратора",
+        )]);
+    }
+
+    rows.push(vec![button("🏠 В меню", TelegramCallback::MenuHome)]);
+    InlineKeyboardMarkup::new(rows)
+}
+
+/// Клавиатура внутреннего экрана подраздела справки.
+///
+/// Всегда содержит только два пути: «↩️ К справке» (возврат к overview) и
+/// «🏠 В меню» (выход из справки полностью).  Никаких mutating-кнопок —
+/// справка только читает.
+pub fn help_section_keyboard() -> InlineKeyboardMarkup {
+    InlineKeyboardMarkup::new(vec![
+        vec![button("↩️ К справке", TelegramCallback::MenuHelp)],
+        vec![button("🏠 В меню", TelegramCallback::MenuHome)],
+    ])
+}
+
+fn help_section_button(section: HelpSection, label: &str) -> InlineKeyboardButton {
+    button(label, TelegramCallback::MenuHelpSection { section })
 }
 
 pub fn create_menu_keyboard() -> InlineKeyboardMarkup {
@@ -107,7 +165,7 @@ pub fn task_list_keyboard(origin: TaskListOrigin, page: &TaskListPage) -> Inline
 
     if let Some(cursor) = &page.next_cursor {
         rows.push(vec![button(
-            "Ещё задачи",
+            "⏩ Ещё задачи",
             TelegramCallback::ListTasks {
                 origin,
                 cursor: Some(cursor.clone()),
@@ -299,20 +357,20 @@ pub fn guided_confirmation_keyboard() -> InlineKeyboardMarkup {
         vec![button("✅ Создать задачу", TelegramCallback::DraftSubmit)],
         vec![
             button(
-                "👤 Исполнитель",
+                "👤 Изменить исполнителя",
                 TelegramCallback::DraftEdit {
                     field: DraftEditField::Assignee,
                 },
             ),
             button(
-                "📝 Описание",
+                "📝 Изменить описание",
                 TelegramCallback::DraftEdit {
                     field: DraftEditField::Description,
                 },
             ),
         ],
         vec![button(
-            "⏰ Срок",
+            "⏰ Изменить срок",
             TelegramCallback::DraftEdit {
                 field: DraftEditField::Deadline,
             },
@@ -473,7 +531,7 @@ pub fn clarification_keyboard(
     }
 
     rows.push(vec![button(
-        "🆕 К меню создания",
+        "↩️ К меню создания",
         TelegramCallback::MenuCreate,
     )]);
     rows.push(vec![button("🏠 В меню", TelegramCallback::MenuHome)]);
@@ -504,6 +562,11 @@ pub fn registration_link_keyboard(
         )]);
     }
 
+    // Always provide an unconditional exit to the main menu so the user is
+    // never trapped on the registration screen regardless of which candidate
+    // options or "continue unlinked" variants are shown.
+    rows.push(vec![button("🏠 В меню", TelegramCallback::MenuHome)]);
+
     InlineKeyboardMarkup::new(rows)
 }
 
@@ -522,7 +585,7 @@ pub fn created_task_followup_keyboard(
 
     if allow_assign_owner {
         rows.push(vec![button(
-            "👤 Кто будет отвечать?",
+            "👤 Назначить исполнителя",
             TelegramCallback::StartTaskReassignInput {
                 task_uid: summary.task_uid,
                 origin: TaskListOrigin::Created,
@@ -605,15 +668,16 @@ pub fn admin_user_details_keyboard(target: &User) -> InlineKeyboardMarkup {
         Some(id) => id,
         None => {
             rows.push(vec![button("↩️ В панель", TelegramCallback::AdminMenu)]);
+            rows.push(vec![button("🏠 В меню", TelegramCallback::MenuHome)]);
             return InlineKeyboardMarkup::new(rows);
         }
     };
 
     let mut role_row = Vec::new();
     for role in [
-        (AdminRoleOption::User, UserRole::User, "👤 Пользователь"),
+        (AdminRoleOption::User, UserRole::User, "👤 Сотрудник"),
         (AdminRoleOption::Manager, UserRole::Manager, "🧭 Менеджер"),
-        (AdminRoleOption::Admin, UserRole::Admin, "🛡 Админ"),
+        (AdminRoleOption::Admin, UserRole::Admin, "🛡 Администратор"),
     ] {
         let (option, domain_role, label) = role;
         if target.role == domain_role {
@@ -665,6 +729,7 @@ pub fn admin_confirmation_keyboard(nonce: &str) -> InlineKeyboardMarkup {
             button("❌ Отмена", TelegramCallback::AdminCancelPending),
         ],
         vec![button("↩️ В панель", TelegramCallback::AdminMenu)],
+        vec![button("🏠 В меню", TelegramCallback::MenuHome)],
     ])
 }
 
@@ -742,12 +807,12 @@ pub fn describe_pending_admin_action(action: &PendingAdminAction) -> String {
             ..
         } => {
             let role_label = match next_role {
-                AdminRoleOption::User => "пользователь",
+                AdminRoleOption::User => "сотрудник",
                 AdminRoleOption::Manager => "менеджер",
-                AdminRoleOption::Admin => "админ",
+                AdminRoleOption::Admin => "администратор",
             };
             format!(
-                "Назначить пользователю {display_name} (tg id {target_telegram_id}) роль: {role_label}"
+                "Назначить пользователю {display_name} (tg id {target_telegram_id}) роль: {role_label}."
             )
         }
         PendingAdminAction::Deactivate {
@@ -756,7 +821,7 @@ pub fn describe_pending_admin_action(action: &PendingAdminAction) -> String {
             ..
         } => format!(
             "Деактивировать пользователя {display_name} (tg id {target_telegram_id}).\n\
-             Он потеряет доступ к боту до ручной реактивации."
+             Аккаунт перестанет работать с ботом до ручной реактивации."
         ),
         PendingAdminAction::Reactivate {
             display_name,

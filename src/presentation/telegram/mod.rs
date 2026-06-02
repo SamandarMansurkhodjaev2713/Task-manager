@@ -1,6 +1,7 @@
 pub mod active_screens;
 pub mod admin_nonce_store;
 pub mod assignee_selections;
+pub mod bot_commands;
 pub mod callbacks;
 pub mod commands;
 pub mod dispatcher;

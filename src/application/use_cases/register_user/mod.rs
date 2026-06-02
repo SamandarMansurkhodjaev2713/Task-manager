@@ -28,10 +28,10 @@ use crate::application::use_cases::register_user::employee_matching::{
 use crate::domain::audit::{AuditAction, AuditLogEntry};
 use crate::domain::employee::Employee;
 use crate::domain::errors::{AppError, AppResult};
-use crate::domain::message::IncomingMessage;
+use crate::domain::message::{IncomingMessage, MessageContent};
 use crate::domain::notification::{Notification, NotificationDeliveryState, NotificationType};
 use crate::domain::task::Task;
-use crate::domain::user::{User, UserRole};
+use crate::domain::user::{OnboardingState, User, UserRole};
 use crate::shared::constants::limits::{
     MAX_REGISTRATION_RECOVERY_BATCHES, REGISTRATION_RECOVERY_TASK_BATCH_SIZE,
 };
@@ -150,7 +150,10 @@ impl RegisterUserUseCase {
         }
 
         let employees = self.employee_repository.list_active().await?;
-        match resolve_registration_match(message, &employees) {
+        let stored_full_name = existing_user
+            .as_ref()
+            .and_then(registration_full_name_from_user);
+        match resolve_registration_match(message, stored_full_name.as_deref(), &employees) {
             RegistrationEmployeeMatch::Unique(employee) => {
                 let Some(employee_id) = employee.id else {
                     return Err(AppError::internal(
@@ -194,6 +197,28 @@ impl RegisterUserUseCase {
         Ok(actor)
     }
 
+    /// Reconciles already-registered Telegram users after the employee directory
+    /// changes. This catches the production case where a user completed
+    /// onboarding while their Sheets username was missing or stale: the next
+    /// sync links the existing user and recovers employee-assigned tasks without
+    /// forcing the person to press `/start` again.
+    pub async fn reconcile_existing_directory_links(&self) -> AppResult<usize> {
+        let employees = self.employee_repository.list_active().await?;
+        let mut linked_count = 0_usize;
+
+        for employee in employees.iter() {
+            if self
+                .reconcile_existing_user_for_employee(employee)
+                .await?
+                .is_some()
+            {
+                linked_count += 1;
+            }
+        }
+
+        Ok(linked_count)
+    }
+
     // ─── Private ─────────────────────────────────────────────────────────────
 
     async fn resolve_employee_for_decision(
@@ -225,13 +250,80 @@ impl RegisterUserUseCase {
         }
     }
 
+    async fn reconcile_existing_user_for_employee(
+        &self,
+        employee: &Employee,
+    ) -> AppResult<Option<User>> {
+        let Some(employee_id) = employee.id else {
+            return Ok(None);
+        };
+        let Some(username) = employee.telegram_username.as_deref() else {
+            return Ok(None);
+        };
+        let Some(existing_user) = self.user_repository.find_by_username(username).await? else {
+            return Ok(None);
+        };
+
+        if existing_user.deactivated_at.is_some()
+            || existing_user.onboarding_state != OnboardingState::Completed
+        {
+            return Ok(None);
+        }
+
+        match existing_user.linked_employee_id {
+            Some(linked_employee_id) if linked_employee_id == employee_id => {
+                self.recover_pending_assignments(&existing_user, Some(employee))
+                    .await?;
+                Ok(None)
+            }
+            Some(linked_employee_id) => {
+                tracing::warn!(
+                    user_id = existing_user.id,
+                    telegram_id = existing_user.telegram_id,
+                    username,
+                    linked_employee_id,
+                    employee_id,
+                    "skipping automatic employee relink because user is already linked elsewhere"
+                );
+                Ok(None)
+            }
+            None => {
+                let message =
+                    synthetic_start_message_for_existing_user(&existing_user, self.clock.now_utc());
+                let linked_user = self
+                    .execute_with_link_decision(
+                        &message,
+                        RegistrationLinkDecision::EmployeeId(employee_id),
+                    )
+                    .await?;
+                Ok(Some(linked_user))
+            }
+        }
+    }
+
     async fn persist_user(
         &self,
         message: &IncomingMessage,
         employee: Option<&Employee>,
     ) -> AppResult<User> {
         let mut user = User::from_message(message, UserRole::User, employee.is_some());
-        user.linked_employee_id = employee.and_then(|value| value.id);
+        if let Some(existing) = self
+            .user_repository
+            .find_by_telegram_id(message.sender_id)
+            .await?
+        {
+            user.full_name = registration_full_name_from_user(&existing)
+                .or(existing.full_name.clone())
+                .or(user.full_name);
+            user.first_name = existing.first_name.or(user.first_name);
+            user.last_name = existing.last_name.or(user.last_name);
+            user.linked_employee_id = employee
+                .and_then(|value| value.id)
+                .or(existing.linked_employee_id);
+            user.is_employee = existing.is_employee || employee.is_some();
+        } else {
+            user.linked_employee_id = employee.and_then(|value| value.id);
+        }
         self.user_repository.upsert_from_message(&user).await
     }
 
@@ -432,6 +524,35 @@ fn is_explicit_start_command(message: &IncomingMessage) -> bool {
     message
         .text_payload()
         .is_some_and(|payload| payload.trim_start().starts_with("/start"))
+}
+
+fn registration_full_name_from_user(user: &User) -> Option<String> {
+    let first = user.first_name.as_deref()?.trim();
+    let last = user.last_name.as_deref()?.trim();
+    if first.is_empty() || last.is_empty() {
+        None
+    } else {
+        Some(format!("{first} {last}"))
+    }
+}
+
+fn synthetic_start_message_for_existing_user(
+    user: &User,
+    timestamp: chrono::DateTime<chrono::Utc>,
+) -> IncomingMessage {
+    IncomingMessage {
+        message_id: 0,
+        chat_id: user.last_chat_id.unwrap_or(user.telegram_id),
+        sender_id: user.telegram_id,
+        sender_name: user.display_name(),
+        sender_username: user.telegram_username.clone(),
+        content: MessageContent::Command {
+            text: "/start".to_owned(),
+        },
+        timestamp,
+        source_message_key_override: None,
+        is_voice_origin: false,
+    }
 }
 
 fn required_user_id(user: &User) -> AppResult<i64> {

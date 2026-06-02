@@ -107,6 +107,16 @@ pub struct SchedulerConfig {
     /// How often (seconds) the Sheets write-back flush runs.
     /// Env: `WRITE_BACK_FLUSH_INTERVAL_SECONDS`.  Default: 300 (5 minutes).
     pub write_back_flush_interval_seconds: NonZeroU32,
+    /// Directory where SQLite hot-backups are written (e.g. `data/backups`).
+    /// When `None` (the default), hot-backups are disabled.  Set
+    /// `SQLITE_BACKUP_DIR` in the environment to enable.
+    pub sqlite_backup_dir: Option<String>,
+    /// How often the backup job runs.  Default: every 6 hours.
+    pub sqlite_backup_interval_hours: NonZeroU32,
+    /// Maximum number of backup files to keep.  Oldest files are deleted
+    /// automatically once this limit is exceeded.  Default: 14 (7 days at
+    /// the default 12-hour interval).
+    pub sqlite_backup_max_files: NonZeroU32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -229,6 +239,9 @@ impl AppConfig {
                     "WRITE_BACK_FLUSH_INTERVAL_SECONDS",
                     300,
                 )?,
+                sqlite_backup_dir: optional_env("SQLITE_BACKUP_DIR"),
+                sqlite_backup_interval_hours: non_zero_u32("SQLITE_BACKUP_INTERVAL_HOURS", 6)?,
+                sqlite_backup_max_files: non_zero_u32("SQLITE_BACKUP_MAX_FILES", 14)?,
             },
             bot: BotBehaviorConfig {
                 rate_limit_per_minute: non_zero_u32(

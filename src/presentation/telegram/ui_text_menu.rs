@@ -5,27 +5,24 @@ use crate::domain::user::User;
 use crate::presentation::telegram::drafts::GuidedTaskDraft;
 
 use super::super::ui_shared::{
-    delivery_badge, delivery_detail, CREATE_EMOJI, GUIDED_EMOJI, HELP_EMOJI, INFO_EMOJI,
-    MENU_EMOJI, QUICK_EMOJI, SETTINGS_EMOJI, SYNC_EMOJI,
+    delivery_badge, delivery_detail, CREATE_EMOJI, GUIDED_EMOJI, INFO_EMOJI, MENU_EMOJI,
+    QUICK_EMOJI, SETTINGS_EMOJI, SYNC_EMOJI,
 };
 
 pub fn welcome_text(actor: &User) -> String {
     let role_hint = if actor.role.is_manager_or_admin() {
-        "У вас открыт расширенный раздел команды: можно быстро смотреть review, блокеры и задачи, где нужно решение менеджера."
+        "Доступен расширенный раздел команды: задачи на проверке, блокеры и всё, \
+         где нужно ваше решение."
     } else {
-        "Здесь удобно ставить задачи, держать фокус и быстро двигать работу дальше."
+        "Здесь удобно ставить задачи, держать фокус и двигать работу дальше."
     };
 
     let display = actor.display_name_object();
     format!(
-        "✨ Добро пожаловать, {}!\n\nЯ помогу поставить задачу, не потерять дедлайн и быстро понять, что требует внимания.\n{role_hint}\n\nВыберите, с чего начать:",
-        display
-    )
-}
-
-pub fn help_text() -> String {
-    format!(
-        "{HELP_EMOJI} Как пользоваться ботом\n\n1. Откройте «🧭 Мой фокус», если хотите быстро понять, что важно прямо сейчас.\n2. Нажмите «{CREATE_EMOJI} Создать задачу», если нужно поставить новую задачу.\n3. Работайте из карточки задачи: статус, комментарий, блокер и переназначение доступны в пару нажатий.\n\nПолезные команды:\n/start — главное меню\n/menu — вернуться в меню\n/new_task <текст> — быстро создать задачу\n/status <T-0001> — открыть задачу по коду\n/cancel_task <T-0001> — отменить задачу\n/my_tasks — мои задачи\n/created_tasks — созданные мной\n/team_tasks — задачи команды\n/stats — моя статистика\n/team_stats — статистика команды\n/settings — профиль и уведомления"
+        "✨ Добро пожаловать, {display}!\n\n\
+         Я помогу поставить задачу, не потерять срок и быстро понять, что требует внимания.\n\
+         {role_hint}\n\n\
+         Выберите, с чего начать:"
     )
 }
 
@@ -37,13 +34,19 @@ pub fn create_menu_text() -> String {
 
 pub fn quick_create_prompt() -> String {
     format!(
-        "{QUICK_EMOJI} Отправьте текст или голосовое сообщение с задачей.\n\nЕсли отправите голосовое, я сначала покажу короткую расшифровку и попрошу подтвердить её.\n\nПример:\n@ivanov подготовить релиз до пятницы\n\nКогда захотите выйти, нажмите «{MENU_EMOJI} В меню»."
+        "{QUICK_EMOJI} Отправьте текст или голосовое сообщение с задачей.\n\n\
+         Если пришлёте голосовое, я сначала покажу расшифровку и попрошу подтвердить её.\n\n\
+         Пример:\n@ivanov подготовить релиз до пятницы\n\n\
+         Когда захотите выйти, нажмите «{MENU_EMOJI} В меню»."
     )
 }
 
 pub fn guided_assignee_prompt() -> String {
     format!(
-        "{GUIDED_EMOJI} Шаг 1 из 3\n\nКого назначаем?\nМожно написать имя, фамилию или @username.\nЕсли задача пока без исполнителя, выберите кнопку ниже."
+        "{GUIDED_EMOJI} Шаг 1 из 3\n\n\
+         Кого назначаем исполнителем?\n\
+         Можно написать имя, фамилию или @username.\n\
+         Если задача пока без исполнителя — нажмите кнопку ниже."
     )
 }
 
@@ -57,13 +60,23 @@ pub fn guided_assignee_clarification_text(resolver_message: &str) -> String {
 
 pub fn guided_description_prompt() -> String {
     format!(
-        "{GUIDED_EMOJI} Шаг 2 из 3\n\nКоротко и по делу опишите задачу.\nОдна сильная формулировка лучше длинного канцелярита.\n\nХорошо: «подготовить релизный чек-лист и сверить версии»\nСлабо: «сделать это»"
+        "{GUIDED_EMOJI} Шаг 2 из 3\n\n\
+         Опишите задачу коротко и по делу.\n\
+         Одна сильная формулировка лучше длинного описания.\n\n\
+         Хорошо: «подготовить релизный чек-лист и сверить версии».\n\
+         Слабо: «сделать это»."
     )
 }
 
 pub fn guided_deadline_prompt() -> String {
     format!(
-        "{GUIDED_EMOJI} Шаг 3 из 3\n\nУкажите срок в удобной форме:\n• завтра\n• пятница\n• 12.05\n• через 3 дня\n\nЕсли срока нет, нажмите «Без срока»."
+        "{GUIDED_EMOJI} Шаг 3 из 3\n\n\
+         Укажите срок в удобной форме:\n\
+         • завтра\n\
+         • пятница\n\
+         • 12.05\n\
+         • через 3 дня\n\n\
+         Если срока нет — нажмите «Без срока»."
     )
 }
 
@@ -73,13 +86,19 @@ pub fn guided_confirmation_text(draft: &GuidedTaskDraft) -> String {
     let deadline = draft.deadline.as_deref().unwrap_or("без срока");
 
     format!(
-        "{INFO_EMOJI} Проверьте задачу перед созданием\n\nИсполнитель: {assignee}\nОписание: {description}\nСрок: {deadline}\n\nЕсли всё в порядке, подтвердите создание."
+        "{INFO_EMOJI} Проверьте задачу перед созданием\n\n\
+         Исполнитель: {assignee}\n\
+         Описание: {description}\n\
+         Срок: {deadline}\n\n\
+         Если всё верно — подтвердите создание."
     )
 }
 
 pub fn voice_confirmation_text(transcript: &str) -> String {
     format!(
-        "{INFO_EMOJI} Я разобрал голосовое так\n\n{transcript}\n\nЕсли всё верно, создайте задачу. Если нужно, сначала поправьте текст."
+        "{INFO_EMOJI} Я разобрал голосовое так\n\n\
+         {transcript}\n\n\
+         Если всё верно — создайте задачу. Если нет — сначала поправьте текст."
     )
 }
 
@@ -122,63 +141,80 @@ pub fn voice_interpretation_text(transcript: &str, preview: &TaskInterpretationP
 
 pub fn voice_edit_prompt(transcript: &str) -> String {
     format!(
-        "{GUIDED_EMOJI} Исправьте текст задачи\n\nСейчас у меня такая версия:\n{transcript}\n\nПришлите одним сообщением финальный текст задачи. Я заменю расшифровку и снова покажу подтверждение."
+        "{GUIDED_EMOJI} Исправьте текст задачи\n\n\
+         Сейчас у меня такая версия:\n{transcript}\n\n\
+         Пришлите одним сообщением финальный текст. Я заменю расшифровку и снова покажу подтверждение."
     )
 }
 
 pub fn registration_link_text(message: &str, candidates: &[EmployeeCandidateView]) -> String {
     if candidates.is_empty() {
         return format!(
-            "{INFO_EMOJI} Привязка сотрудника\n\n{message}\n\nМожно продолжить без привязки и вернуться к этому позже."
+            "{INFO_EMOJI} Привязка к справочнику сотрудников\n\n\
+             {message}\n\n\
+             Можно продолжить без привязки и вернуться к этому позже."
         );
     }
 
     format!(
-        "{INFO_EMOJI} Привязка сотрудника\n\n{message}\n\nПодходящие варианты:\n{}",
+        "{INFO_EMOJI} Привязка к справочнику сотрудников\n\n\
+         {message}\n\n\
+         Подходящие варианты:\n{}",
         render_candidate_lines(candidates)
     )
 }
 
 pub fn onboarding_welcome_text() -> String {
     format!(
-        "{INFO_EMOJI} Добро пожаловать!\n\nЧтобы я мог корректно назначать вам задачи и подсказывать коллегам ваше имя, давайте быстро познакомимся.\n\nШаг 1 из 2. Пожалуйста, укажите ваше имя (одно слово, только буквы)."
+        "{INFO_EMOJI} Добро пожаловать!\n\n\
+         Чтобы корректно назначать вам задачи и подсказывать коллегам ваше имя, \
+         нужно быстро познакомиться.\n\n\
+         Шаг 1 из 2. Укажите ваше имя — одно слово, только буквы."
     )
 }
 
 pub fn onboarding_ask_last_name_text(first_name: &str) -> String {
     format!(
-        "{INFO_EMOJI} Отлично, {first_name}!\n\nШаг 2 из 2. Теперь пришлите вашу фамилию (одним сообщением, только буквы и дефис)."
+        "{INFO_EMOJI} Отлично, {first_name}!\n\n\
+         Шаг 2 из 2. Теперь пришлите вашу фамилию — одним сообщением, \
+         только буквы и дефис."
     )
 }
 
 pub fn onboarding_retry_first_name_text() -> String {
     format!(
-        "{INFO_EMOJI} Пожалуйста, пришлите ваше имя одним словом.\nИспользуйте только буквы (например: «Анна» или «Михаил»)."
+        "{INFO_EMOJI} Пришлите имя одним словом — только буквами.\n\
+         Например: «Анна» или «Михаил»."
     )
 }
 
 pub fn onboarding_retry_last_name_text() -> String {
     format!(
-        "{INFO_EMOJI} Пришлите фамилию одной строкой.\nДопустимы буквы и дефис (например: «Иванова» или «Петров-Водкин»)."
+        "{INFO_EMOJI} Пришлите фамилию одной строкой — только буквы и дефис.\n\
+         Например: «Иванова» или «Петров-Водкин»."
     )
 }
 
 pub fn onboarding_too_long_text() -> String {
     format!(
-        "{INFO_EMOJI} Слишком длинный текст.\nИмя и фамилия не должны превышать 64 символов. Попробуйте ещё раз."
+        "{INFO_EMOJI} Слишком длинный текст.\n\
+         Имя и фамилия не должны превышать 64 символов. Попробуйте ещё раз."
     )
 }
 
 pub fn onboarding_link_expected_text() -> String {
     format!(
-        "{INFO_EMOJI} Ожидаю ваш выбор на клавиатуре ниже.\nНажмите на свою карточку в справочнике или «Продолжить без привязки»."
+        "{INFO_EMOJI} Сделайте выбор на клавиатуре ниже.\n\
+         Нажмите на свою карточку в справочнике или «Продолжить без привязки»."
     )
 }
 
 pub fn onboarding_completed_text(actor: &User) -> String {
     let display = actor.display_name_object();
     format!(
-        "✨ Готово, {display}!\n\nПрофиль создан. Теперь откройте главное меню, чтобы поставить первую задачу или посмотреть список входящих."
+        "✨ Готово, {display}!\n\n\
+         Профиль создан. Откройте главное меню, чтобы поставить первую задачу \
+         или посмотреть входящие."
     )
 }
 
@@ -189,7 +225,12 @@ pub fn stats_text(title: &str, stats: &StatsView) -> String {
         .unwrap_or_else(|| "нет данных".to_owned());
 
     format!(
-        "{title}\n\nВсего создано: {}\nАктивных: {}\nЗавершено: {}\nПросрочено: {}\nСреднее время выполнения: {}",
+        "{title}\n\n\
+         Всего создано: {}\n\
+         Активных: {}\n\
+         Завершено: {}\n\
+         Просрочено: {}\n\
+         Среднее время выполнения: {}",
         stats.created_count,
         stats.active_count,
         stats.completed_count,
@@ -285,7 +326,9 @@ fn format_quiet_hours(start_min: i32, end_min: i32) -> String {
 }
 
 pub fn synced_text(count: usize) -> String {
-    format!("{SYNC_EMOJI} Синхронизация завершена. Обновлено сотрудников: {count}.")
+    format!(
+        "{SYNC_EMOJI} Синхронизация завершена. Обновлено записей в справочнике сотрудников: {count}."
+    )
 }
 
 fn render_candidate_lines(candidates: &[EmployeeCandidateView]) -> String {

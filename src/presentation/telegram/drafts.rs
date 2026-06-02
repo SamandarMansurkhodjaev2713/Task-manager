@@ -1,10 +1,18 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::presentation::telegram::callbacks::DraftEditField;
+
+/// Sessions that have not been touched for longer than this are considered
+/// stale and silently dropped on the next access.  30 minutes matches the
+/// typical "user walked away mid-flow" pattern: long enough to not interrupt
+/// normal use, short enough to free memory and prevent the FSM from resuming
+/// with very old context that would confuse both parties.
+pub const DRAFT_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 #[derive(Debug, Clone)]
 pub enum CreationSession {
@@ -58,9 +66,28 @@ pub enum VoiceTaskStep {
     EditTranscript,
 }
 
+/// A `CreationSession` tagged with its insertion time for lazy-expiry.
+struct TimedSession {
+    session: CreationSession,
+    inserted_at: Instant,
+}
+
+impl TimedSession {
+    fn new(session: CreationSession) -> Self {
+        Self {
+            session,
+            inserted_at: Instant::now(),
+        }
+    }
+
+    fn is_expired(&self) -> bool {
+        self.inserted_at.elapsed() > DRAFT_IDLE_TIMEOUT
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct CreationSessionStore {
-    sessions: Arc<RwLock<HashMap<i64, CreationSession>>>,
+    sessions: Arc<RwLock<HashMap<i64, TimedSession>>>,
 }
 
 impl GuidedTaskDraft {
@@ -135,39 +162,57 @@ impl CreationSessionStore {
         self.sessions
             .write()
             .await
-            .insert(chat_id, CreationSession::QuickCapture);
+            .insert(chat_id, TimedSession::new(CreationSession::QuickCapture));
     }
 
     pub async fn set_guided(&self, chat_id: i64) {
-        self.sessions
-            .write()
-            .await
-            .insert(chat_id, CreationSession::Guided(GuidedTaskDraft::new()));
+        self.sessions.write().await.insert(
+            chat_id,
+            TimedSession::new(CreationSession::Guided(GuidedTaskDraft::new())),
+        );
     }
 
     pub async fn set_voice(&self, chat_id: i64, draft: VoiceTaskDraft) {
         self.sessions
             .write()
             .await
-            .insert(chat_id, CreationSession::Voice(draft));
+            .insert(chat_id, TimedSession::new(CreationSession::Voice(draft)));
     }
 
+    /// Returns the current session for `chat_id`, or `None` if absent **or
+    /// expired**.  An expired session is silently removed so that the user
+    /// starts a clean flow rather than resuming a stale one.
     pub async fn get(&self, chat_id: i64) -> Option<CreationSession> {
-        self.sessions.read().await.get(&chat_id).cloned()
+        // Fast path: read lock, return if present and fresh.
+        {
+            let guard = self.sessions.read().await;
+            match guard.get(&chat_id) {
+                Some(timed) if !timed.is_expired() => return Some(timed.session.clone()),
+                None => return None,
+                Some(_) => {} // expired — fall through to write-lock removal
+            }
+        }
+        // Slow path: session exists but is expired — promote to write lock and evict.
+        tracing::debug!(
+            chat_id,
+            "creation session expired; evicting stale FSM state"
+        );
+        self.sessions.write().await.remove(&chat_id);
+        None
     }
 
     pub async fn update_guided(&self, chat_id: i64, draft: GuidedTaskDraft) {
         self.sessions
             .write()
             .await
-            .insert(chat_id, CreationSession::Guided(draft));
+            .insert(chat_id, TimedSession::new(CreationSession::Guided(draft)));
     }
 
     pub async fn update_voice(&self, chat_id: i64, draft: VoiceTaskDraft) {
         self.sessions
             .write()
             .await
-            .insert(chat_id, CreationSession::Voice(draft));
+            .insert(chat_id, TimedSession::new(CreationSession::Voice(draft)));
     }
 
     pub async fn clear(&self, chat_id: i64) {
@@ -177,9 +222,76 @@ impl CreationSessionStore {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use crate::presentation::telegram::callbacks::DraftEditField;
 
-    use super::{GuidedTaskDraft, GuidedTaskStep, VoiceTaskDraft, VoiceTaskStep};
+    use super::{
+        CreationSessionStore, GuidedTaskDraft, GuidedTaskStep, TimedSession, VoiceTaskDraft,
+        VoiceTaskStep,
+    };
+
+    // ── FSM idle timeout ─────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn given_fresh_session_when_get_then_returns_session() {
+        let store = CreationSessionStore::default();
+        store.set_quick_capture(1).await;
+        let result = store.get(1).await;
+        assert!(
+            result.is_some(),
+            "fresh session must be returned from store"
+        );
+    }
+
+    #[tokio::test]
+    async fn given_no_session_when_get_then_returns_none() {
+        let store = CreationSessionStore::default();
+        let result = store.get(999).await;
+        assert!(result.is_none(), "absent session must return None");
+    }
+
+    #[tokio::test]
+    async fn given_expired_session_when_get_then_returns_none_and_evicts() {
+        // Build a TimedSession with a very short timeout by back-dating its
+        // `inserted_at` field.  We do this directly to avoid sleeping in tests.
+        use super::{CreationSession, DRAFT_IDLE_TIMEOUT};
+        use std::collections::HashMap;
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+
+        // Construct an already-expired timed session by shifting inserted_at back.
+        let expired = TimedSession {
+            session: CreationSession::QuickCapture,
+            // Simulate "inserted 31 minutes ago"
+            inserted_at: std::time::Instant::now()
+                .checked_sub(DRAFT_IDLE_TIMEOUT + Duration::from_secs(60))
+                .expect("backdate must not underflow"),
+        };
+
+        let store = CreationSessionStore {
+            sessions: Arc::new(RwLock::new(HashMap::from([(42_i64, expired)]))),
+        };
+
+        // get() must evict and return None.
+        let result = store.get(42).await;
+        assert!(result.is_none(), "expired session must not be returned");
+
+        // The session must also be removed from the map.
+        assert!(
+            store.sessions.read().await.get(&42).is_none(),
+            "expired session must be evicted from the store"
+        );
+    }
+
+    #[tokio::test]
+    async fn given_cleared_session_when_get_then_returns_none() {
+        let store = CreationSessionStore::default();
+        store.set_guided(5).await;
+        store.clear(5).await;
+        let result = store.get(5).await;
+        assert!(result.is_none(), "cleared session must not be returned");
+    }
 
     // ── GuidedTaskDraft ──────────────────────────────────────────────────────
 

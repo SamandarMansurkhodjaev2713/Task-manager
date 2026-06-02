@@ -5,7 +5,9 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::application::use_cases::collect_stats::StatsScope;
-use crate::presentation::telegram::callbacks::{TaskCardMode, TaskListOrigin, TelegramCallback};
+use crate::presentation::telegram::callbacks::{
+    HelpSection, TaskCardMode, TaskListOrigin, TelegramCallback,
+};
 use crate::presentation::telegram::drafts::{GuidedTaskStep, VoiceTaskStep};
 use crate::presentation::telegram::interactions::TaskInteractionKind;
 
@@ -49,7 +51,14 @@ pub enum ScreenDescriptor {
     /// Onboarding v2 — "enter your last name" step.
     OnboardingLastName,
     MainMenu,
+    /// Корневой экран `/help` (выбор подраздела).  Содержимое и доступные
+    /// кнопки зависят от роли актора, но сам descriptor одинаковый.
     Help,
+    /// Подраздел справки (открыт через [`TelegramCallback::MenuHelpSection`]).
+    /// Каждый подраздел — отдельный экран со своим back-стеком («↩️ К справке»).
+    HelpSection {
+        section: HelpSection,
+    },
     Settings,
     CreateMenu,
     QuickCreate,
@@ -112,6 +121,7 @@ impl ScreenDescriptor {
             Self::OnboardingFirstName | Self::OnboardingLastName => Stage::Onboarding,
             Self::MainMenu
             | Self::Help
+            | Self::HelpSection { .. }
             | Self::Settings
             | Self::Stats(_)
             | Self::SyncEmployeesResult
@@ -122,6 +132,15 @@ impl ScreenDescriptor {
             | Self::GuidedAssigneeOptions
             | Self::VoiceCreate(_)
             | Self::TaskCreationResult { .. }
+            // TaskInteractionPrompt is intentionally kept in Stage::Creation.
+            // It serves TWO different keyboard surfaces depending on context:
+            //   1. Text-input prompt with task_detail_keyboard (comment / blocker / reassign)
+            //   2. Reassign clarification screen with clarification_keyboard
+            // The clarification keyboard's callbacks (ClarificationPickEmployee,
+            // ClarificationCreateUnassigned, MenuCreate) are Stage::Creation callbacks
+            // that would be rejected by Stage::TaskDetail.  The task-action callbacks
+            // (UpdateTaskStatus etc.) are covered by the explicit uid-matching arm in
+            // `accepts()`, which takes precedence over the stage default.
             | Self::TaskInteractionPrompt { .. } => Stage::Creation,
             Self::TaskDetail { .. }
             | Self::CancelConfirmation { .. }
@@ -142,15 +161,23 @@ impl ScreenDescriptor {
     /// detail callbacks must target the *same* task_uid as the active card).
     pub fn accepts(&self, callback: &TelegramCallback) -> bool {
         match (self, callback) {
-            // TaskDetail is stricter than the stage default: the task_uid
-            // inside the callback MUST match the active card or the cancel
-            // confirmation for that card.
+            // TaskDetail / CancelConfirmation / TaskInteractionPrompt are all
+            // stricter than the stage default: the task_uid inside the callback
+            // MUST match the active card.
+            //
+            // TaskInteractionPrompt renders the full task_detail_keyboard whose
+            // action buttons carry the same task_uid, so the same defence applies:
+            // a stale button from a *different* task must not leak through.
             (
                 Self::TaskDetail {
                     task_uid: active_uid,
                     ..
                 }
                 | Self::CancelConfirmation {
+                    task_uid: active_uid,
+                    ..
+                }
+                | Self::TaskInteractionPrompt {
                     task_uid: active_uid,
                     ..
                 },
@@ -198,6 +225,7 @@ impl Stage {
                 callback,
                 CB::MenuHome
                     | CB::MenuHelp
+                    | CB::MenuHelpSection { .. }
                     | CB::MenuSettings
                     | CB::MenuStats
                     | CB::MenuTeamStats
@@ -229,6 +257,13 @@ impl Stage {
                     | CB::ClarificationPickEmployee { .. }
                     | CB::ClarificationCreateUnassigned
                     | CB::GuidedAssigneeConfirm { .. }
+                    // MenuCreate is needed here so "↩️ К меню создания" and
+                    // "🆕 Ещё задача" buttons within the creation flow resolve
+                    // as Fresh rather than StaleNavigation.  Without it the
+                    // policy returns StaleNavigation and the user sees a
+                    // misleading "Открываю актуальный экран." toast even though
+                    // they intentionally pressed the button.
+                    | CB::MenuCreate
                     | CB::MenuHome
                     | CB::OpenTask { .. }
             ),
@@ -428,5 +463,138 @@ mod tests {
             }),
             "admin mutations must not cross into the registration screen"
         );
+    }
+
+    /// Regression guard: TaskInteractionPrompt must remain Stage::Creation.
+    ///
+    /// The screen is overloaded — it serves two keyboard surfaces:
+    ///   1. task_detail_keyboard for comment / blocker text prompts
+    ///   2. clarification_keyboard for reassignment candidate selection
+    ///
+    /// The clarification keyboard contains Stage::Creation callbacks
+    /// (ClarificationPickEmployee, ClarificationCreateUnassigned, MenuCreate).
+    /// If the stage were TaskDetail those would be rejected.  Task-action
+    /// callbacks (UpdateTaskStatus etc.) are accepted via the explicit uid-
+    /// matching arm in `accepts()`, which takes precedence over the stage
+    /// default, so the stage does not need to be TaskDetail for those.
+    #[test]
+    fn given_task_interaction_prompt_when_stage_checked_then_creation() {
+        use crate::presentation::telegram::interactions::TaskInteractionKind;
+        let uid = Uuid::now_v7();
+        let screen = ScreenDescriptor::TaskInteractionPrompt {
+            task_uid: uid,
+            origin: TaskListOrigin::Assigned,
+            kind: TaskInteractionKind::Comment,
+        };
+        assert_eq!(
+            screen.stage(),
+            Stage::Creation,
+            "TaskInteractionPrompt must stay Stage::Creation so clarification \
+             callbacks (ClarificationPickEmployee etc.) are accepted"
+        );
+    }
+
+    /// Regression guard: task action callbacks from TaskInteractionPrompt must
+    /// be accepted only when they target the same task_uid.
+    #[test]
+    fn given_task_interaction_prompt_when_callback_targets_same_task_then_accepted() {
+        use crate::presentation::telegram::interactions::TaskInteractionKind;
+        let uid = Uuid::now_v7();
+        let other_uid = Uuid::now_v7();
+        let screen = ScreenDescriptor::TaskInteractionPrompt {
+            task_uid: uid,
+            origin: TaskListOrigin::Assigned,
+            kind: TaskInteractionKind::Comment,
+        };
+
+        // Same uid — must be accepted (user presses another action button on the same task)
+        assert!(
+            screen.accepts(&TelegramCallback::UpdateTaskStatus {
+                task_uid: uid,
+                next_status: crate::domain::task::TaskStatus::InProgress,
+                origin: TaskListOrigin::Assigned,
+            }),
+            "same-uid UpdateTaskStatus must be accepted on TaskInteractionPrompt"
+        );
+        assert!(
+            screen.accepts(&TelegramCallback::StartTaskBlockerInput {
+                task_uid: uid,
+                origin: TaskListOrigin::Assigned,
+            }),
+            "same-uid StartTaskBlockerInput must be accepted on TaskInteractionPrompt"
+        );
+
+        // Different uid — must be rejected (cross-task leak defence)
+        assert!(
+            !screen.accepts(&TelegramCallback::UpdateTaskStatus {
+                task_uid: other_uid,
+                next_status: crate::domain::task::TaskStatus::InProgress,
+                origin: TaskListOrigin::Assigned,
+            }),
+            "different-uid UpdateTaskStatus must be rejected on TaskInteractionPrompt"
+        );
+    }
+
+    /// Regression guard: clarification callbacks must be accepted on TaskInteractionPrompt.
+    ///
+    /// The reassign clarification path renders TaskInteractionPrompt with
+    /// clarification_keyboard (ClarificationPickEmployee, ClarificationCreateUnassigned,
+    /// MenuCreate).  These fall through to Stage::Creation which accepts them.
+    #[test]
+    fn given_task_interaction_prompt_when_clarification_callback_arrives_then_accepted() {
+        use crate::presentation::telegram::interactions::TaskInteractionKind;
+        let uid = Uuid::now_v7();
+        let screen = ScreenDescriptor::TaskInteractionPrompt {
+            task_uid: uid,
+            origin: TaskListOrigin::Assigned,
+            kind: TaskInteractionKind::Reassign,
+        };
+
+        assert!(
+            screen.accepts(&TelegramCallback::ClarificationPickEmployee { employee_id: 42 }),
+            "ClarificationPickEmployee must be accepted on TaskInteractionPrompt \
+             so reassign clarification buttons work"
+        );
+        assert!(
+            screen.accepts(&TelegramCallback::ClarificationCreateUnassigned),
+            "ClarificationCreateUnassigned must be accepted on TaskInteractionPrompt"
+        );
+        assert!(
+            screen.accepts(&TelegramCallback::MenuCreate),
+            "MenuCreate must be accepted on TaskInteractionPrompt \
+             (↩️ К меню создания in clarification keyboard)"
+        );
+    }
+
+    /// Regression guard for the "↩️ К меню создания" / "🆕 Ещё задача" buttons.
+    ///
+    /// `MenuCreate` must be accepted on every Stage::Creation screen so these
+    /// navigation buttons resolve as `Fresh` and do not produce a misleading
+    /// "Открываю актуальный экран." toast.
+    #[test]
+    fn given_creation_stage_when_menu_create_callback_arrives_then_it_is_accepted() {
+        use crate::presentation::telegram::drafts::{GuidedTaskStep, VoiceTaskStep};
+
+        let creation_screens = [
+            ScreenDescriptor::CreateMenu,
+            ScreenDescriptor::QuickCreate,
+            ScreenDescriptor::GuidedStep(GuidedTaskStep::Assignee),
+            ScreenDescriptor::GuidedStep(GuidedTaskStep::Description),
+            ScreenDescriptor::GuidedStep(GuidedTaskStep::Deadline),
+            ScreenDescriptor::GuidedStep(GuidedTaskStep::Confirm),
+            ScreenDescriptor::GuidedAssigneeOptions,
+            ScreenDescriptor::VoiceCreate(VoiceTaskStep::Confirm),
+            ScreenDescriptor::VoiceCreate(VoiceTaskStep::EditTranscript),
+            ScreenDescriptor::TaskCreationResult { task_uid: None },
+        ];
+
+        for screen in &creation_screens {
+            assert_eq!(screen.stage(), Stage::Creation, "screen: {screen:?}");
+            assert!(
+                screen.accepts(&TelegramCallback::MenuCreate),
+                "MenuCreate must be accepted on {screen:?} so back-to-create-menu \
+                 buttons do not produce a StaleNavigation toast"
+            );
+        }
     }
 }

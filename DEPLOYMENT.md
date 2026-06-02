@@ -71,6 +71,11 @@ docker compose --profile test run --rm tests
 docker compose --profile smoke run --rm smoke-check
 ```
 
+On Windows local demos, prefer `http://localhost:8080` for manual checks.
+If `http://127.0.0.1:8080` returns an unrelated error, another local
+process may already be bound to that address while Docker is bound on
+`localhost`/IPv6.
+
 Current Docker setup uses:
 - multi-stage build
 - dedicated runtime image
@@ -176,3 +181,4 @@ deleted externally), recover as follows:
 - [docs/memory.md](./docs/memory.md)
 - [docs/operations.md](./docs/operations.md)
 - [docs/quality-roadmap.md](./docs/quality-roadmap.md)
+- [docs/production-readiness-2026-05-06.md](./docs/production-readiness-2026-05-06.md)
