@@ -130,7 +130,7 @@ impl SearchTasksUseCase {
             .collect();
 
         // Stable ordering by updated_at desc so the UI feels predictable.
-        matching.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        matching.sort_by_key(|task| std::cmp::Reverse(task.updated_at));
         matching.truncate(MAX_SEARCH_RESULTS);
 
         let results = matching
