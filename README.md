@@ -2,6 +2,8 @@
 
 Production-oriented Telegram bot for task intake, assignment, review, blockers, comments, reminders, and manager visibility.
 
+**CI proof:** GitHub Actions checks formatting, compile, clippy and test compilation on every push and pull request.
+
 ## Русское описание
 
 **Telegram Task Bot** — production-oriented бот для превращения сообщений и голосовых в управляемые задачи: назначение исполнителей, сроки, статусы, review, blockers, comments, reminders, manager inbox и audit log.
