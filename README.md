@@ -2,6 +2,12 @@
 
 Production-oriented Telegram bot for task intake, assignment, review, blockers, comments, reminders, and manager visibility.
 
+## Русское описание
+
+**Telegram Task Bot** — production-oriented бот для превращения сообщений и голосовых в управляемые задачи: назначение исполнителей, сроки, статусы, review, blockers, comments, reminders, manager inbox и audit log.
+
+Проект показывает не просто Telegram-команды, а полноценную automation-систему: clean architecture, domain state machine, SQLite migrations, RBAC, admin panel прямо в Telegram, фоновые jobs, delivery state, idempotency/retry-подход и Docker deployment. Для работодателя это сильный сигнал по backend/automation: бот спроектирован как продукт с операционной надёжностью, а не как одноразовый скрипт.
+
 ## What is implemented
 
 - Clean architecture with `presentation -> application -> domain <- infrastructure`
